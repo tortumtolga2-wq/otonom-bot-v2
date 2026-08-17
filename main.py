@@ -2,7 +2,6 @@ import os
 import threading
 import logging
 import requests
-import io
 import pandas as pd
 from flask import Flask, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -18,57 +17,49 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
 WATCHLIST = [
-    # BIST Hisseleri (.TR)
-    "THYAO.TR", "GARAN.TR", "AKBNK.TR", "KCHOL.TR", "SAHOL.TR", 
-    "ASELS.TR", "TUPRS.TR", "SISE.TR", "FROTO.TR", "BIMAS.TR",
+    # BIST Hisseleri (.IS)
+    "THYAO.IS", "GARAN.IS", "AKBNK.IS", "KCHOL.IS", "SAHOL.IS", 
+    "ASELS.IS", "TUPRS.IS", "SISE.IS", "FROTO.IS", "BIMAS.IS",
     
-    # EM ETF & ADR'ler (.US)
-    "EEM.US", "VWO.US", "INDA.US", "MCHI.US", "EWZ.US", "FXI.US", "EZA.US",
-    "TSM.US", "BABA.US", "VALE.US", "NU.US", "MELI.US", "SE.US",
+    # EM ETF & ADR'ler
+    "EEM", "VWO", "INDA", "MCHI", "EWZ", "FXI", "EZA",
+    "TSM", "BABA", "VALE", "NU", "MELI", "SE",
     
     # Emtia & Makro
-    "GLD.US", "SLV.US", "XLE.US",
+    "GLD", "SLV", "XLE",
     
     # ABD Devleri
-    "AAPL.US", "MSFT.US", "NVDA.US", "BRK-B.US", "JPM.US", "PG.US"
+    "AAPL", "MSFT", "NVDA", "BRK-B", "JPM", "PG"
 ]
 
-def fetch_stooq_data(symbol):
-    """Stooq CSV verisini yönlendirme (302) takibi ve tarayıcı simülasyonu ile çeker."""
-    url = f"https://stooq.com/q/d/l/?s={symbol.lower()}&i=d"
-    
-    session = requests.Session()
+def fetch_chart_data(symbol):
+    """Yahoo Finance v8 API üzerinden bulut sunucu engellerine takılmadan veri çeker."""
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=1y&interval=1d"
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
     }
     
     try:
-        res = session.get(url, headers=headers, allow_redirects=True, timeout=12)
-        if res.status_code == 200 and len(res.text) > 50:
-            # CSV Parse
-            df = pd.read_csv(io.StringIO(res.text))
+        res = requests.get(url, headers=headers, timeout=10)
+        if res.status_code == 200:
+            data = res.json()
+            result = data['chart']['result'][0]
             
-            if not df.empty and 'Close' in df.columns and 'Date' in df.columns:
-                # 'No data' yanıtını kontrol et
-                if 'No data' in str(df.iloc[0].values):
-                    logging.warning(f"{symbol} için Stooq veri döndürmedi (No data).")
-                    return pd.DataFrame()
-
-                # Dönüşümler
-                df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
-                df['Close'] = pd.to_numeric(df['Close'], errors='coerce')
-                
-                df = df.dropna(subset=['Close', 'Date'])
-                df = df.sort_values('Date', ascending=True).reset_index(drop=True)
-                return df
-            else:
-                logging.warning(f"{symbol} CSV sütunları eksik veya boş.")
+            timestamps = result['timestamp']
+            quote = result['indicators']['quote'][0]
+            
+            df = pd.DataFrame({
+                'Date': pd.to_datetime(timestamps, unit='s'),
+                'Close': quote['close'],
+                'Volume': quote['volume']
+            })
+            
+            df = df.dropna(subset=['Close']).reset_index(drop=True)
+            return df
         else:
-            logging.error(f"{symbol} HTTP Hata Kodu: {res.status_code}")
+            logging.error(f"{symbol} API HTTP Hatası: {res.status_code}")
     except Exception as e:
-        logging.error(f"{symbol} Stooq çekim hatası: {e}")
+        logging.error(f"{symbol} veri çekme hatası: {e}")
         
     return pd.DataFrame()
 
@@ -79,7 +70,7 @@ def send_telegram_message(text):
         try:
             res = requests.post(url, json=payload, timeout=10)
             res.raise_for_status()
-            logging.info("Telegram mesajı başarıyla gönderildi.")
+            logging.info("Telegram mesajı gönderildi.")
         except Exception as e:
             logging.error(f"Telegram mesaj gönderme hatası: {e}")
 
@@ -96,7 +87,7 @@ def run_market_scan(is_daily_summary=False):
     
     for symbol in WATCHLIST:
         try:
-            df = fetch_stooq_data(symbol)
+            df = fetch_chart_data(symbol)
             if df.empty or len(df) < 200:
                 continue
 
@@ -120,8 +111,8 @@ def run_market_scan(is_daily_summary=False):
             if rsi_current > 70:
                 rejections.append(f"RSI > 70 ({rsi_current:.1f})")
 
-            clean_symbol = symbol.replace('.TR', '').replace('.US', '')
-            currency = "TL" if ".TR" in symbol else "$"
+            clean_symbol = symbol.replace('.IS', '')
+            currency = "TL" if ".IS" in symbol else "$"
 
             if len(rejections) == 0:
                 passed_symbols.append(clean_symbol)
@@ -163,7 +154,7 @@ def run_backtest():
     
     for symbol in WATCHLIST:
         try:
-            df = fetch_stooq_data(symbol)
+            df = fetch_chart_data(symbol)
             if df.empty or len(df) < 210:
                 continue
 
@@ -182,7 +173,7 @@ def run_backtest():
 
                 if close > sma and sma > sma_past and r < 70:
                     total_trades += 1
-                    target = close * 1.03  # Hedef %3 olarak esnetildi
+                    target = close * 1.05
                     stop = sma * 0.98
 
                     future_prices = df['Close'].iloc[i+1:i+11].values
@@ -201,9 +192,9 @@ def run_backtest():
         f"📈 GEÇMİŞE DÖNÜK BAŞARIM TESTİ (BACKTEST)\n\n"
         f"Başarıyla İşlenen Sembol: {processed_count}/{len(WATCHLIST)}\n"
         f"Toplam Üretilen Sinyal: {total_trades}\n"
-        f"Başarılı İşlem (TP1 %3): {winning_trades}\n"
+        f"Başarılı İşlem (TP1 %5): {winning_trades}\n"
         f"Kazanma Oranı (Win Rate): %{win_rate:.1f}\n\n"
-        f"Veri Kaynağı: Stooq Engine v2"
+        f"Veri Mimarisi: Direct v8 JSON Engine"
     )
     send_telegram_message(msg)
 

@@ -2,7 +2,7 @@ import os
 import threading
 import logging
 import requests
-import yfinance as yf
+import io
 import pandas as pd
 from flask import Flask, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -17,29 +17,40 @@ app = Flask(__name__)
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
+# Stooq Sembol Formatları
 WATCHLIST = [
-    # BIST Hisseleri
-    "THYAO.IS", "GARAN.IS", "AKBNK.IS", "KCHOL.IS", "SAHOL.IS", 
-    "ASELS.IS", "TUPRS.IS", "SISE.IS", "FROTO.IS", "BIMAS.IS",
+    # BIST Hisseleri (.IS -> .TR)
+    "THYAO.TR", "GARAN.TR", "AKBNK.TR", "KCHOL.TR", "SAHOL.TR", 
+    "ASELS.TR", "TUPRS.TR", "SISE.TR", "FROTO.TR", "BIMAS.TR",
     
-    # EM ETF & ADR'ler
-    "EEM", "VWO", "INDA", "MCHI", "EWZ", "FXI", "EZA",
-    "TSM", "BABA", "VALE", "NU", "MELI", "SE",
+    # EM ETF & ADR'ler (.US)
+    "EEM.US", "VWO.US", "INDA.US", "MCHI.US", "EWZ.US", "FXI.US", "EZA.US",
+    "TSM.US", "BABA.US", "VALE.US", "NU.US", "MELI.US", "SE.US",
     
-    # Emtia & Makro
-    "GLD", "SLV", "XLE",
+    # Emtia & Makro Koruma
+    "GLD.US", "SLV.US", "XLE.US",
     
     # ABD Devleri
-    "AAPL", "MSFT", "NVDA", "BRK-B", "JPM", "PG"
+    "AAPL.US", "MSFT.US", "NVDA.US", "BRK-B.US", "JPM.US", "PG.US"
 ]
 
-def get_custom_session():
-    """Yahoo Finance IP bloklamasını aşmak için tarayıcı kimliği tanımlar."""
-    session = requests.Session()
-    session.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    })
-    return session
+def fetch_stooq_data(symbol):
+    """Render/Cloud IP bloklarına takılmayan Stooq CSV API entegrasyonu."""
+    url = f"https://stooq.com/q/d/l/?s={symbol.lower()}&i=d"
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    }
+    try:
+        res = requests.get(url, headers=headers, timeout=10)
+        if res.status_code == 200 and len(res.content) > 100:
+            df = pd.read_csv(io.StringIO(res.text))
+            if not df.empty and 'Close' in df.columns:
+                df['Date'] = pd.to_datetime(df['Date'])
+                df = df.sort_values('Date').reset_index(drop=True)
+                return df
+    except Exception as e:
+        logging.error(f"{symbol} Stooq veri çekme hatası: {e}")
+    return pd.DataFrame()
 
 def send_telegram_message(text):
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
@@ -48,9 +59,9 @@ def send_telegram_message(text):
         try:
             res = requests.post(url, json=payload, timeout=10)
             res.raise_for_status()
-            logging.info("Telegram mesaji basariyla gonderildi.")
+            logging.info("Telegram mesajı başarıyla gönderildi.")
         except Exception as e:
-            logging.error(f"Telegram mesaj gonderme hatasi: {e}")
+            logging.error(f"Telegram mesaj gönderme hatası: {e}")
 
 def calculate_rsi(series, period=14):
     delta = series.diff()
@@ -60,15 +71,12 @@ def calculate_rsi(series, period=14):
     return 100 - (100 / (1 + rs))
 
 def run_market_scan(is_daily_summary=False):
-    logging.info("Anlik piyasa taramasi baslatildi...")
+    logging.info("Anlık piyasa taraması (Stooq Altyapısı) başlatıldı...")
     passed_symbols = []
-    session = get_custom_session()
     
     for symbol in WATCHLIST:
         try:
-            ticker = yf.Ticker(symbol, session=session)
-            df = ticker.history(period="1y")
-            
+            df = fetch_stooq_data(symbol)
             if df.empty or len(df) < 200:
                 continue
 
@@ -81,9 +89,8 @@ def run_market_scan(is_daily_summary=False):
             rsi_series = calculate_rsi(df['Close'])
             rsi_current = float(rsi_series.iloc[-1])
 
-            current_volume = float(df['Volume'].iloc[-1])
-            avg_volume_20 = float(df['Volume'].iloc[-21:-1].mean())
-            volume_ratio = current_volume / avg_volume_20 if avg_volume_20 > 0 else 1.0
+            current_volume = float(df['Volume'].iloc[-1]) if 'Volume' in df.columns else 0
+            avg_volume_20 = float(df['Volume'].iloc[-21:-1].mean()) if 'Volume' in df.columns else 1
 
             rejections = []
 
@@ -91,13 +98,13 @@ def run_market_scan(is_daily_summary=False):
                 rejections.append("Fiyat < 200 SMA")
 
             if sma_200_current <= sma_200_past:
-                rejections.append("200 SMA Egimi Dusuk")
+                rejections.append("200 SMA Eğimi Düşük")
 
             if rsi_current > 70:
                 rejections.append(f"RSI > 70 ({rsi_current:.1f})")
 
-            clean_symbol = symbol.replace('.IS', '')
-            currency = "TL" if ".IS" in symbol else "$"
+            clean_symbol = symbol.replace('.TR', '').replace('.US', '')
+            currency = "TL" if ".TR" in symbol else "$"
 
             if len(rejections) == 0:
                 passed_symbols.append(clean_symbol)
@@ -111,7 +118,7 @@ def run_market_scan(is_daily_summary=False):
                         f"Hisse: {clean_symbol}\n"
                         f"Giriş Fiyatı: {current_price:.2f} {currency}\n"
                         f"200 SMA: {sma_200_current:.2f} {currency}\n"
-                        f"RSI (14): {rsi_current:.1f} | Hacim Orani: {volume_ratio:.2f}x\n\n"
+                        f"RSI (14): {rsi_current:.1f}\n\n"
                         f"📊 RİSK YÖNETİMİ HEDEFLERİ:\n"
                         f"🛑 Stop-Loss: {stop_loss:.2f} {currency}\n"
                         f"🎯 Hedef 1 (%5): {tp1:.2f} {currency}\n"
@@ -120,7 +127,7 @@ def run_market_scan(is_daily_summary=False):
                     send_telegram_message(msg)
 
         except Exception as symbol_err:
-            logging.error(f"{symbol} analiz hatasi: {symbol_err}")
+            logging.error(f"{symbol} analiz hatası: {symbol_err}")
 
     if is_daily_summary:
         summary_msg = (
@@ -135,13 +142,10 @@ def run_backtest():
     logging.info("Backtest simülasyonu başlatıldı...")
     total_trades = 0
     winning_trades = 0
-    session = get_custom_session()
     
     for symbol in WATCHLIST:
         try:
-            ticker = yf.Ticker(symbol, session=session)
-            df = ticker.history(period="1y")
-            
+            df = fetch_stooq_data(symbol)
             if df.empty or len(df) < 210:
                 continue
 
@@ -163,7 +167,6 @@ def run_backtest():
                     stop = sma * 0.98
 
                     future_prices = df['Close'].iloc[i+1:i+11]
-                    
                     hit_target = any(future_prices >= target)
                     hit_stop = any(future_prices <= stop)
 
@@ -171,7 +174,7 @@ def run_backtest():
                         winning_trades += 1
 
         except Exception as b_err:
-            logging.error(f"Backtest hatasi {symbol}: {b_err}")
+            logging.error(f"Backtest hatası {symbol}: {b_err}")
 
     win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
     msg = (
@@ -180,7 +183,7 @@ def run_backtest():
         f"Toplam Üretilen Sinyal: {total_trades}\n"
         f"Başarılı İşlem (TP1 %5): {winning_trades}\n"
         f"Kazanma Oranı (Win Rate): %{win_rate:.1f}\n\n"
-        f"Strateji: Dalio Trend + Mobius Kriterleri"
+        f"Veri Kaynağı: Stooq Engine"
     )
     send_telegram_message(msg)
 
@@ -199,7 +202,7 @@ scheduler.start()
 
 @app.route('/', methods=['GET'])
 def home():
-    return f"Otonom Bot Active! Takip Edilen Enstruman Sayisi: {len(WATCHLIST)}", 200
+    return f"Otonom Bot Active! Takip Edilen Enstrüman Sayısı: {len(WATCHLIST)}", 200
 
 @app.route('/scan-now', methods=['GET', 'POST'])
 def manual_scan():

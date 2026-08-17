@@ -1,153 +1,5 @@
-import os
-import threading
-import logging
-import requests
-import pandas as pd
-from flask import Flask, jsonify
-from apscheduler.schedulers.background import BackgroundScheduler
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-
-app = Flask(__name__)
-
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
-
-WATCHLIST = [
-    # BIST Hisseleri (.IS)
-    "THYAO.IS", "GARAN.IS", "AKBNK.IS", "KCHOL.IS", "SAHOL.IS", 
-    "ASELS.IS", "TUPRS.IS", "SISE.IS", "FROTO.IS", "BIMAS.IS",
-    
-    # EM ETF & ADR'ler
-    "EEM", "VWO", "INDA", "MCHI", "EWZ", "FXI", "EZA",
-    "TSM", "BABA", "VALE", "NU", "MELI", "SE",
-    
-    # Emtia & Makro
-    "GLD", "SLV", "XLE",
-    
-    # ABD Devleri
-    "AAPL", "MSFT", "NVDA", "BRK-B", "JPM", "PG"
-]
-
-def fetch_chart_data(symbol):
-    """Yahoo Finance v8 API üzerinden bulut sunucu engellerine takılmadan veri çeker."""
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=1y&interval=1d"
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
-    }
-    
-    try:
-        res = requests.get(url, headers=headers, timeout=10)
-        if res.status_code == 200:
-            data = res.json()
-            result = data['chart']['result'][0]
-            
-            timestamps = result['timestamp']
-            quote = result['indicators']['quote'][0]
-            
-            df = pd.DataFrame({
-                'Date': pd.to_datetime(timestamps, unit='s'),
-                'Close': quote['close'],
-                'Volume': quote['volume']
-            })
-            
-            df = df.dropna(subset=['Close']).reset_index(drop=True)
-            return df
-        else:
-            logging.error(f"{symbol} API HTTP Hatası: {res.status_code}")
-    except Exception as e:
-        logging.error(f"{symbol} veri çekme hatası: {e}")
-        
-    return pd.DataFrame()
-
-def send_telegram_message(text):
-    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
-        try:
-            res = requests.post(url, json=payload, timeout=10)
-            res.raise_for_status()
-            logging.info("Telegram mesajı gönderildi.")
-        except Exception as e:
-            logging.error(f"Telegram mesaj gönderme hatası: {e}")
-
-def calculate_rsi(series, period=14):
-    delta = series.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    rs = gain / loss
-    return 100 - (100 / (1 + rs))
-
-def run_market_scan(is_daily_summary=False):
-    logging.info("Anlık piyasa taraması başlatıldı...")
-    passed_symbols = []
-    
-    for symbol in WATCHLIST:
-        try:
-            df = fetch_chart_data(symbol)
-            if df.empty or len(df) < 200:
-                continue
-
-            current_price = float(df['Close'].iloc[-1])
-            
-            sma_200_series = df['Close'].rolling(window=200).mean()
-            sma_200_current = float(sma_200_series.iloc[-1])
-            sma_200_past = float(sma_200_series.iloc[-20])
-
-            rsi_series = calculate_rsi(df['Close'])
-            rsi_current = float(rsi_series.iloc[-1])
-
-            rejections = []
-
-            if current_price < sma_200_current:
-                rejections.append("Fiyat < 200 SMA")
-
-            if sma_200_current <= sma_200_past:
-                rejections.append("200 SMA Eğimi Düşük")
-
-            if rsi_current > 70:
-                rejections.append(f"RSI > 70 ({rsi_current:.1f})")
-
-            clean_symbol = symbol.replace('.IS', '')
-            currency = "TL" if ".IS" in symbol else "$"
-
-            if len(rejections) == 0:
-                passed_symbols.append(clean_symbol)
-                stop_loss = sma_200_current * 0.98
-                tp1 = current_price * 1.05
-                tp2 = current_price * 1.10
-
-                if not is_daily_summary:
-                    msg = (
-                        f"🎯 MÜKEMMEL EŞLEŞME (DALIO & MOBIUS)\n\n"
-                        f"Hisse: {clean_symbol}\n"
-                        f"Giriş Fiyatı: {current_price:.2f} {currency}\n"
-                        f"200 SMA: {sma_200_current:.2f} {currency}\n"
-                        f"RSI (14): {rsi_current:.1f}\n\n"
-                        f"📊 RİSK YÖNETİMİ HEDEFLERİ:\n"
-                        f"🛑 Stop-Loss: {stop_loss:.2f} {currency}\n"
-                        f"🎯 Hedef 1 (%5): {tp1:.2f} {currency}\n"
-                        f"🚀 Hedef 2 (%10): {tp2:.2f} {currency}"
-                    )
-                    send_telegram_message(msg)
-
-        except Exception as symbol_err:
-            logging.error(f"{symbol} analiz hatası: {symbol_err}")
-
-    if is_daily_summary:
-        summary_msg = (
-            f"🌙 GÜNLÜK PİYASA ÖZET RAPORU\n\n"
-            f"Taranan Enstrüman: {len(WATCHLIST)}\n"
-            f"Filtreleri Geçen: {len(passed_symbols)}\n"
-            f"Aktif Sinyaller: {', '.join(passed_symbols) if passed_symbols else 'Yok'}"
-        )
-        send_telegram_message(summary_msg)
-
 def run_backtest():
-    logging.info("Backtest simülasyonu başlatıldı...")
+    logging.info("Backtest simülasyonu başlatıldı (Stop %3)...")
     total_trades = 0
     winning_trades = 0
     processed_count = 0
@@ -174,7 +26,7 @@ def run_backtest():
                 if close > sma and sma > sma_past and r < 70:
                     total_trades += 1
                     target = close * 1.05
-                    stop = sma * 0.98
+                    stop = sma * 0.97  # Stop-loss mesafesi %3 olarak güncellendi
 
                     future_prices = df['Close'].iloc[i+1:i+11].values
                     
@@ -189,7 +41,7 @@ def run_backtest():
 
     win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
     msg = (
-        f"📈 GEÇMİŞE DÖNÜK BAŞARIM TESTİ (BACKTEST)\n\n"
+        f"📈 GEÇMİŞE DÖNÜK BAŞARIM TESTİ (STOP %3)\n\n"
         f"Başarıyla İşlenen Sembol: {processed_count}/{len(WATCHLIST)}\n"
         f"Toplam Üretilen Sinyal: {total_trades}\n"
         f"Başarılı İşlem (TP1 %5): {winning_trades}\n"
@@ -197,34 +49,3 @@ def run_backtest():
         f"Veri Mimarisi: Direct v8 JSON Engine"
     )
     send_telegram_message(msg)
-
-def start_async_scan(is_daily_summary=False):
-    thread = threading.Thread(target=run_market_scan, args=(is_daily_summary,))
-    thread.start()
-
-def start_async_backtest():
-    thread = threading.Thread(target=run_backtest)
-    thread.start()
-
-scheduler = BackgroundScheduler(daemon=True)
-scheduler.add_job(run_market_scan, 'interval', minutes=15)
-scheduler.add_job(run_market_scan, 'cron', hour=20, minute=0, kwargs={'is_daily_summary': True})
-scheduler.start()
-
-@app.route('/', methods=['GET'])
-def home():
-    return f"Otonom Bot Active! Takip Edilen Enstrüman Sayısı: {len(WATCHLIST)}", 200
-
-@app.route('/scan-now', methods=['GET', 'POST'])
-def manual_scan():
-    start_async_scan()
-    return jsonify({"status": "scan_initiated_async", "total_symbols": len(WATCHLIST)}), 200
-
-@app.route('/backtest', methods=['GET', 'POST'])
-def manual_backtest():
-    start_async_backtest()
-    return jsonify({"status": "backtest_initiated_async"}), 200
-
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)

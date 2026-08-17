@@ -2,6 +2,7 @@ import os
 import threading
 import requests
 import yfinance as yf
+import pandas as pd
 from flask import Flask, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -35,38 +36,63 @@ def send_telegram_message(text):
         except Exception as e:
             print("Telegram hatasi:", e)
 
+def calculate_rsi(series, period=14):
+    delta = series.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
+
 def run_market_scan():
-    print("Otomatik piyasa taramasi baslatildi (Batch Mode)...")
+    print("Otomatik piyasa taramasi baslatildi (Gelişmiş Trend & RSI Filtreli)...")
     try:
-        # Tek bir istekte tüm sembollerin 1 yıllık verisini çek (Rate-limit engelini aşar)
         data = yf.download(WATCHLIST, period="1y", group_by='ticker', threads=True)
         
         for symbol in WATCHLIST:
             try:
-                # Toplu veriden ilgili sembolü çek
                 df = data[symbol] if len(WATCHLIST) > 1 else data
                 df = df.dropna(subset=['Close'])
                 
-                if df.empty or len(df) < 200:
+                if df.empty or len(df) < 220:
                     continue
 
                 current_price = float(df['Close'].iloc[-1])
-                sma_200 = float(df['Close'].rolling(window=200).mean().iloc[-1])
+                
+                # 200 SMA Hesaplaması ve Eğim Mantığı
+                sma_200_series = df['Close'].rolling(window=200).mean()
+                sma_200_current = float(sma_200_series.iloc[-1])
+                sma_200_past = float(sma_200_series.iloc[-20])  # 20 işlem günü önceki 200 SMA
+
+                # RSI (14) Hesaplaması
+                rsi_series = calculate_rsi(df['Close'])
+                rsi_current = float(rsi_series.iloc[-1])
 
                 rejections = []
-                if current_price < sma_200:
-                    rejections.append("200 SMA altinda")
+
+                # Filtre 1: Fiyat 200 SMA üzerinde mi?
+                if current_price < sma_200_current:
+                    rejections.append("Fiyat 200 SMA altında")
+
+                # Filtre 2: 200 SMA yukarı yönlü eğimli mi? (Trend Yönü Onayı)
+                if sma_200_current <= sma_200_past:
+                    rejections.append("200 SMA eğimi aşağı/yatay")
+
+                # Filtre 3: RSI aşırı alım bölgesinde mi? (> 70 ise riskli)
+                if rsi_current > 70:
+                    rejections.append(f"RSI aşırı alımda ({rsi_current:.1f})")
 
                 clean_symbol = symbol.replace('.IS', '')
                 currency = "TL" if ".IS" in symbol else "$"
 
+                # Tüm filtrelerden geçen kaliteli sinyaller
                 if len(rejections) == 0:
                     msg = (
-                        f"✅ ONAYLANDI (DALIO TREND FILTRESI)\n\n"
+                        f"✅ GÜÇLÜ TREND ONAYLANDI\n\n"
                         f"Hisse: {clean_symbol}\n"
                         f"Fiyat: {current_price:.2f} {currency}\n"
-                        f"200 SMA: {sma_200:.2f} {currency}\n\n"
-                        f"Durum: Yükseliş Trendi Onaylandı!"
+                        f"200 SMA: {sma_200_current:.2f} {currency}\n"
+                        f"RSI (14): {rsi_current:.1f}\n\n"
+                        f"Durum: Yükseliş trendi güçlü, 200 SMA eğimi yukarı ve tepe noktada değil."
                     )
                     send_telegram_message(msg)
 
@@ -77,7 +103,6 @@ def run_market_scan():
         print("Toplu veri çekme hatası:", e)
 
 def start_async_scan():
-    # Sunucu zaman aşımını önlemek için arka plan thread kullanımı
     thread = threading.Thread(target=run_market_scan)
     thread.start()
 

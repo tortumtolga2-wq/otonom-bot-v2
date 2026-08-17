@@ -17,9 +17,8 @@ app = Flask(__name__)
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
-# Stooq Sembol Formatları
 WATCHLIST = [
-    # BIST Hisseleri (.IS -> .TR)
+    # BIST Hisseleri (.TR)
     "THYAO.TR", "GARAN.TR", "AKBNK.TR", "KCHOL.TR", "SAHOL.TR", 
     "ASELS.TR", "TUPRS.TR", "SISE.TR", "FROTO.TR", "BIMAS.TR",
     
@@ -27,7 +26,7 @@ WATCHLIST = [
     "EEM.US", "VWO.US", "INDA.US", "MCHI.US", "EWZ.US", "FXI.US", "EZA.US",
     "TSM.US", "BABA.US", "VALE.US", "NU.US", "MELI.US", "SE.US",
     
-    # Emtia & Makro Koruma
+    # Emtia & Makro
     "GLD.US", "SLV.US", "XLE.US",
     
     # ABD Devleri
@@ -35,7 +34,7 @@ WATCHLIST = [
 ]
 
 def fetch_stooq_data(symbol):
-    """Render/Cloud IP bloklarına takılmayan Stooq CSV API entegrasyonu."""
+    """Stooq CSV verisini indirir, tarih ve sayısal tipleri garanti altına alır."""
     url = f"https://stooq.com/q/d/l/?s={symbol.lower()}&i=d"
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
@@ -44,9 +43,13 @@ def fetch_stooq_data(symbol):
         res = requests.get(url, headers=headers, timeout=10)
         if res.status_code == 200 and len(res.content) > 100:
             df = pd.read_csv(io.StringIO(res.text))
-            if not df.empty and 'Close' in df.columns:
+            if not df.empty and 'Close' in df.columns and 'Date' in df.columns:
+                # Tarih ve Sayısal Dönüşümleri Garanti Et
                 df['Date'] = pd.to_datetime(df['Date'])
-                df = df.sort_values('Date').reset_index(drop=True)
+                df['Close'] = pd.to_numeric(df['Close'], errors='coerce')
+                
+                # Temizlik ve Eskiden Yeniye Doğru Sıralama (Ascending)
+                df = df.dropna(subset=['Close']).sort_values('Date', ascending=True).reset_index(drop=True)
                 return df
     except Exception as e:
         logging.error(f"{symbol} Stooq veri çekme hatası: {e}")
@@ -71,7 +74,7 @@ def calculate_rsi(series, period=14):
     return 100 - (100 / (1 + rs))
 
 def run_market_scan(is_daily_summary=False):
-    logging.info("Anlık piyasa taraması (Stooq Altyapısı) başlatıldı...")
+    logging.info("Anlık piyasa taraması başlatıldı...")
     passed_symbols = []
     
     for symbol in WATCHLIST:
@@ -88,9 +91,6 @@ def run_market_scan(is_daily_summary=False):
 
             rsi_series = calculate_rsi(df['Close'])
             rsi_current = float(rsi_series.iloc[-1])
-
-            current_volume = float(df['Volume'].iloc[-1]) if 'Volume' in df.columns else 0
-            avg_volume_20 = float(df['Volume'].iloc[-21:-1].mean()) if 'Volume' in df.columns else 1
 
             rejections = []
 
@@ -152,21 +152,26 @@ def run_backtest():
             sma200 = df['Close'].rolling(200).mean()
             rsi = calculate_rsi(df['Close'])
 
-            start_idx = max(200, len(df) - 100)
+            # Test periyodu: Son 120 bar
+            start_idx = max(200, len(df) - 120)
             end_idx = len(df) - 10
 
             for i in range(start_idx, end_idx):
-                close = df['Close'].iloc[i]
-                sma = sma200.iloc[i]
-                sma_past = sma200.iloc[i-15]
-                r = rsi.iloc[i]
+                close = float(df['Close'].iloc[i])
+                sma = float(sma200.iloc[i])
+                sma_past = float(sma200.iloc[i-15])
+                r = float(rsi.iloc[i])
 
+                # Trend ve RSI Uygunluğu
                 if close > sma and sma > sma_past and r < 70:
                     total_trades += 1
                     target = close * 1.05
                     stop = sma * 0.98
 
-                    future_prices = df['Close'].iloc[i+1:i+11]
+                    # Sonraki 10 barı kontrol et
+                    future_prices = df['Close'].iloc[i+1:i+11].values
+                    
+                    # Hedef ve Stop Kontrolü
                     hit_target = any(future_prices >= target)
                     hit_stop = any(future_prices <= stop)
 

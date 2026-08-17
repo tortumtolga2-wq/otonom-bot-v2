@@ -24,7 +24,7 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
 def fetch_chart_data(symbol):
-    """Yahoo Finance v8 API üzerinden günlük OHLC/Close verisi çeker"""
+    """Yahoo Finance v8 API üzerinden günlük OHLC ve Close verisi çeker (ATR için High/Low dahil)"""
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=1y&interval=1d"
     headers = {'User-Agent': 'Mozilla/5.0'}
     try:
@@ -32,9 +32,13 @@ def fetch_chart_data(symbol):
         if res.status_code == 200:
             data = res.json()
             result = data['chart']['result'][0]
+            quote = result['indicators']['quote'][0]
             df = pd.DataFrame({
                 'Date': pd.to_datetime(result['timestamp'], unit='s'),
-                'Close': result['indicators']['quote'][0]['close']
+                'Open': quote['open'],
+                'High': quote['high'],
+                'Low': quote['low'],
+                'Close': quote['close']
             })
             return df.dropna()
     except Exception as e:
@@ -59,9 +63,18 @@ def calculate_rsi(series, period=14):
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
+def calculate_atr(df, period=14):
+    """Average True Range (ATR) volatilite göstergesini hesaplar"""
+    high_low = df['High'] - df['Low']
+    high_close = (df['High'] - df['Close'].shift()).abs()
+    low_close = (df['Low'] - df['Close'].shift()).abs()
+    ranges = pd.concat([high_low, high_close, low_close], axis=1)
+    true_range = ranges.max(axis=1)
+    return true_range.rolling(window=period).mean()
+
 def run_backtest():
-    """Detaylı metrikler ve varlık bazlı kırılımlar içeren gelişmiş backtest raporu"""
-    logging.info("Detaylı backtest raporlama simülasyonu başlatıldı...")
+    """Dinamik ATR Volatilite Kuralları, Rejim Filtresi ve Detaylı Raporlama"""
+    logging.info("Dinamik volatilite tabanlı backtest simülasyonu başlatıldı...")
     total_trades = 0
     winning_trades = 0
     processed_count = 0
@@ -69,7 +82,7 @@ def run_backtest():
     
     asset_results = {}
     
-    # Piyasa Rejimi Referansı (SPY veya listedeki ilk varlık)
+    # Piyasa Rejimi Referansı
     market_ref_symbol = "SPY" if "SPY" in WATCHLIST else WATCHLIST[0]
     market_df = fetch_chart_data(market_ref_symbol)
     market_sma200 = market_df['Close'].rolling(200).mean() if not market_df.empty else pd.Series()
@@ -83,6 +96,7 @@ def run_backtest():
             processed_count += 1
             sma200 = df['Close'].rolling(200).mean()
             rsi = calculate_rsi(df['Close'])
+            atr = calculate_atr(df)
 
             start_idx = max(200, len(df) - 120)
             end_idx = len(df) - 10
@@ -91,7 +105,7 @@ def run_backtest():
             sym_wins = 0
 
             for i in range(start_idx, end_idx):
-                # Ayı Piyasası Rejimi Filtresi: Referans endeks 200 SMA altındaysa alım yapma
+                # Ayı Piyasası Rejimi Filtresi
                 if not market_sma200.empty and i < len(market_sma200):
                     if float(market_df['Close'].iloc[i]) < float(market_sma200.iloc[i]):
                         continue
@@ -100,19 +114,24 @@ def run_backtest():
                 sma = float(sma200.iloc[i])
                 sma_past = float(sma200.iloc[i-15])
                 r = float(rsi.iloc[i])
+                current_atr = float(atr.iloc[i]) if not pd.isna(atr.iloc[i]) else close * 0.02
 
-                # Trend Takip Koşulları (Fiyat > 200 SMA, 200 SMA yükseliyor, RSI < 70)
+                # Trend Takip Koşulları
                 if close > sma and sma > sma_past and r < 70:
                     total_trades += 1
                     sym_trades += 1
                     
                     entry_price = close * (1 + commission_rate)
-                    target = entry_price * 1.05 * (1 + commission_rate)
-                    stop = sma * 0.97
+                    
+                    # DİNAMİK RİSK KONTROLÜ: Stop mesafesi 1.5 ATR katı olarak belirlenir
+                    stop = entry_price - (1.5 * current_atr)
+                    target = entry_price + (2.5 * current_atr)  # Risk/Kazanç Oranı: ~1.66
 
-                    future_prices = df['Close'].iloc[i+1:i+11].values
-                    hit_target = any(future_prices >= target)
-                    hit_stop = any(future_prices <= stop)
+                    future_highs = df['High'].iloc[i+1:i+11].values
+                    future_lows = df['Low'].iloc[i+1:i+11].values
+                    
+                    hit_target = any(future_highs >= target)
+                    hit_stop = any(future_lows <= stop)
 
                     if hit_target and not hit_stop:
                         winning_trades += 1
@@ -122,35 +141,33 @@ def run_backtest():
                 asset_results[symbol] = (sym_wins / sym_trades) * 100
 
         except Exception as b_err:
-            logging.error(f"Raporlama hata detayı {symbol}: {b_err}")
+            logging.error(f"Dinamik risk hata detayı {symbol}: {b_err}")
 
     win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
-    
-    # En başarılı ilk 3 varlığı bulalım
     top_assets = sorted(asset_results.items(), key=lambda x: x[1], reverse=True)[:3]
     top_str = ", ".join([f"{k} (%{v:.0f})" for k, v in top_assets]) if top_assets else "Veri Yok"
 
     msg = (
-        f"📊 DETAYLI STRATEJİ PERFORMANS RAPORU\n\n"
+        f"📊 DİNAMİK ATR RİSKLİ STRATEJİ RAPORU\n\n"
         f"🌐 Rejim Referansı: {market_ref_symbol}\n"
         f"📁 Taranan Varlık: {processed_count}/{len(WATCHLIST)}\n"
         f"🎯 Toplam Sinyal: {total_trades}\n"
         f"✅ Başarılı İşlem: {winning_trades}\n"
         f"📈 Genel Başarı (Win Rate): %{win_rate:.1f}\n\n"
         f"🏆 En İyi Performans Verenler:\n{top_str}\n\n"
-        f"⚙️ Parametreler: Komisyon %0.1 | Stop %3 | Rejim Aktif"
+        f"⚙️ Parametreler: Komisyon %0.1 | Dinamik Stop (1.5x ATR) | Rejim Aktif"
     )
     send_telegram_message(msg)
 
 @app.route('/')
 def home():
-    return "Trading Bot Aktif ve Çalışıyor!"
+    return "Trading Bot (Dinamik Volatilite Modu) Aktif ve Çalışıyor!"
 
 @app.route('/backtest')
 def manual_backtest():
     """Manuel backtest tetikleme uç noktası"""
     threading.Thread(target=run_backtest).start()
-    return "Backtest arka planda başlatıldı, sonuçlar Telegram'a gönderilecektir."
+    return "Dinamik backtest arka planda başlatıldı, sonuçlar Telegram'a gönderilecektir."
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))

@@ -44,7 +44,7 @@ def calculate_rsi(series, period=14):
     return 100 - (100 / (1 + rs))
 
 def run_market_scan():
-    print("Otomatik piyasa taramasi baslatildi (Trend, RSI & Hacim Filtreli)...")
+    print("Otomatik piyasa taramasi baslatildi (Dalio & Mobius Tam Filtreli)...")
     try:
         data = yf.download(WATCHLIST, period="1y", group_by='ticker', threads=True)
         
@@ -58,19 +58,32 @@ def run_market_scan():
 
                 current_price = float(df['Close'].iloc[-1])
                 
-                # 1. 200 SMA Eğim
+                # 1. Dalio: 200 SMA Eğim
                 sma_200_series = df['Close'].rolling(window=200).mean()
                 sma_200_current = float(sma_200_series.iloc[-1])
                 sma_200_past = float(sma_200_series.iloc[-20])
 
-                # 2. RSI (14)
+                # 2. Teknik: RSI (14)
                 rsi_series = calculate_rsi(df['Close'])
                 rsi_current = float(rsi_series.iloc[-1])
 
-                # 3. Hacim Analizi (Son hacim vs 20 günlük ortalama hacim)
+                # 3. Teknik: Hacim Analizi
                 current_volume = float(df['Volume'].iloc[-1])
                 avg_volume_20 = float(df['Volume'].iloc[-21:-1].mean())
                 volume_ratio = current_volume / avg_volume_20 if avg_volume_20 > 0 else 1.0
+
+                # 4. Mobius: Temel Değerleme Filtreleri (F/K ve P/DD)
+                # ETF/Emtia için temel rasyo kontrolü atlanır
+                is_etf = symbol in ["GLD", "SLV", "XLE", "EEM", "VWO", "INDA", "MCHI", "EWZ", "FXI", "EZA"]
+                
+                pe_ratio = None
+                pb_ratio = None
+
+                if not is_etf:
+                    ticker = yf.Ticker(symbol)
+                    info = ticker.info or {}
+                    pe_ratio = info.get('trailingPE')
+                    pb_ratio = info.get('priceToBook')
 
                 rejections = []
 
@@ -84,20 +97,30 @@ def run_market_scan():
                     rejections.append(f"RSI aşırı alımda ({rsi_current:.1f})")
 
                 if volume_ratio < 1.2:
-                    rejections.append(f"Hacim yetersiz (Ortalamanin {volume_ratio:.2f}x kati)")
+                    rejections.append(f"Hacim yetersiz ({volume_ratio:.2f}x)")
+
+                if not is_etf:
+                    if pe_ratio is not None and pe_ratio > 20:
+                        rejections.append(f"F/K yüksek ({pe_ratio:.1f})")
+                    if pb_ratio is not None and pb_ratio > 3.0:
+                        rejections.append(f"P/DD yüksek ({pb_ratio:.1f})")
 
                 clean_symbol = symbol.replace('.IS', '')
                 currency = "TL" if ".IS" in symbol else "$"
 
                 if len(rejections) == 0:
+                    pe_str = f"{pe_ratio:.1f}" if pe_ratio else "N/A (ETF)"
+                    pb_str = f"{pb_ratio:.1f}" if pb_ratio else "N/A (ETF)"
+                    
                     msg = (
-                        f"🚀 YÜKSEK HACİMLİ TREND ONAYLANDI\n\n"
+                        f"🎯 MÜKEMMEL EŞLEŞME (DALIO & MOBIUS)\n\n"
                         f"Hisse: {clean_symbol}\n"
                         f"Fiyat: {current_price:.2f} {currency}\n"
                         f"200 SMA: {sma_200_current:.2f} {currency}\n"
                         f"RSI (14): {rsi_current:.1f}\n"
-                        f"Hacim Artışı: {volume_ratio:.2f}x (Ortalama üstü)\n\n"
-                        f"Durum: Güçlü hacimle desteklenen trend girişi!"
+                        f"Hacim Artışı: {volume_ratio:.2f}x\n"
+                        f"F/K: {pe_str} | P/DD: {pb_str}\n\n"
+                        f"Durum: Yükseliş trendi, hacim onayı ve cazip değerleme bir arada!"
                     )
                     send_telegram_message(msg)
 

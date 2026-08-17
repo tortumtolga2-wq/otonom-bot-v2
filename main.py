@@ -33,6 +33,14 @@ WATCHLIST = [
     "AAPL", "MSFT", "NVDA", "BRK-B", "JPM", "PG"
 ]
 
+def get_custom_session():
+    """Yahoo Finance IP bloklamasını aşmak için tarayıcı kimliği tanımlar."""
+    session = requests.Session()
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    })
+    return session
+
 def send_telegram_message(text):
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -54,10 +62,11 @@ def calculate_rsi(series, period=14):
 def run_market_scan(is_daily_summary=False):
     logging.info("Anlik piyasa taramasi baslatildi...")
     passed_symbols = []
+    session = get_custom_session()
     
     for symbol in WATCHLIST:
         try:
-            ticker = yf.Ticker(symbol)
+            ticker = yf.Ticker(symbol, session=session)
             df = ticker.history(period="1y")
             
             if df.empty or len(df) < 200:
@@ -126,10 +135,11 @@ def run_backtest():
     logging.info("Backtest simülasyonu başlatıldı...")
     total_trades = 0
     winning_trades = 0
+    session = get_custom_session()
     
     for symbol in WATCHLIST:
         try:
-            ticker = yf.Ticker(symbol)
+            ticker = yf.Ticker(symbol, session=session)
             df = ticker.history(period="1y")
             
             if df.empty or len(df) < 210:
@@ -138,7 +148,6 @@ def run_backtest():
             sma200 = df['Close'].rolling(200).mean()
             rsi = calculate_rsi(df['Close'])
 
-            # Son 100 işlem gününü test et
             start_idx = max(200, len(df) - 100)
             end_idx = len(df) - 10
 
@@ -148,7 +157,6 @@ def run_backtest():
                 sma_past = sma200.iloc[i-15]
                 r = rsi.iloc[i]
 
-                # Esnek Backtest Koşulları (Trend Üstünde & RSI Uygun)
                 if close > sma and sma > sma_past and r < 70:
                     total_trades += 1
                     target = close * 1.05

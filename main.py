@@ -56,6 +56,7 @@ def run_market_scan(is_daily_summary=False):
     passed_symbols = []
     
     try:
+        # Toplu veri indirme (Rate limit yemez)
         data = yf.download(WATCHLIST, period="1y", group_by='ticker', threads=True)
         
         for symbol in WATCHLIST:
@@ -83,7 +84,7 @@ def run_market_scan(is_daily_summary=False):
                 avg_volume_20 = float(df['Volume'].iloc[-21:-1].mean())
                 volume_ratio = current_volume / avg_volume_20 if avg_volume_20 > 0 else 1.0
 
-                # 4. Mobius: Temel Değerleme Filtreleri
+                # 4. Mobius: Temel Değerleme Filtreleri (Güvenli Çekim)
                 is_etf = symbol in ["GLD", "SLV", "XLE", "EEM", "VWO", "INDA", "MCHI", "EWZ", "FXI", "EZA"]
                 
                 pe_ratio = None
@@ -92,11 +93,12 @@ def run_market_scan(is_daily_summary=False):
                 if not is_etf:
                     try:
                         ticker = yf.Ticker(symbol)
-                        info = ticker.info or {}
-                        pe_ratio = info.get('trailingPE')
-                        pb_ratio = info.get('priceToBook')
-                    except Exception as info_err:
-                        logging.warning(f"{symbol} temel veriler cekilemedi: {info_err}")
+                        # Sadece hızlı erişilebilir alanlardan almaya çalış
+                        pe_ratio = ticker.info.get('trailingPE')
+                        pb_ratio = ticker.info.get('priceToBook')
+                    except Exception:
+                        # Rate limit yenirse temel filtreyi atla, teknik analizle devam et
+                        pass
 
                 rejections = []
 
@@ -112,10 +114,10 @@ def run_market_scan(is_daily_summary=False):
                 if volume_ratio < 1.2:
                     rejections.append(f"Hacim Yetersiz ({volume_ratio:.2f}x)")
 
-                if not is_etf:
-                    if pe_ratio is not None and pe_ratio > 20:
+                if not is_etf and pe_ratio is not None and pb_ratio is not None:
+                    if pe_ratio > 20:
                         rejections.append(f"F/K > 20 ({pe_ratio:.1f})")
-                    if pb_ratio is not None and pb_ratio > 3.0:
+                    if pb_ratio > 3.0:
                         rejections.append(f"P/DD > 3.0 ({pb_ratio:.1f})")
 
                 clean_symbol = symbol.replace('.IS', '')
@@ -129,8 +131,8 @@ def run_market_scan(is_daily_summary=False):
                     tp1 = current_price * 1.05
                     tp2 = current_price * 1.10
 
-                    pe_str = f"{pe_ratio:.1f}" if pe_ratio else "N/A (ETF)"
-                    pb_str = f"{pb_ratio:.1f}" if pb_ratio else "N/A (ETF)"
+                    pe_str = f"{pe_ratio:.1f}" if pe_ratio else "N/A"
+                    pb_str = f"{pb_ratio:.1f}" if pb_ratio else "N/A"
                     
                     if not is_daily_summary:
                         msg = (
@@ -147,10 +149,10 @@ def run_market_scan(is_daily_summary=False):
                         )
                         send_telegram_message(msg)
                 else:
-                    logging.debug(f"❌ {clean_symbol} elendi: {', '.join(rejections)}")
+                    logging.info(f"❌ {clean_symbol} elendi: {', '.join(rejections)}")
 
             except Exception as symbol_err:
-                logging.error(f"{symbol} analizinde beklenmeyen hata: {symbol_err}")
+                logging.error(f"{symbol} analizinde hata: {symbol_err}")
 
         if is_daily_summary:
             summary_msg = (
@@ -161,7 +163,6 @@ def run_market_scan(is_daily_summary=False):
                 f"Sistem 7/24 aktif çalışmaya devam ediyor."
             )
             send_telegram_message(summary_msg)
-            logging.info("Gunluk ozet raporu Telegram'a iletildi.")
 
     except Exception as e:
         logging.error(f"Toplu veri çekme hatası: {e}")

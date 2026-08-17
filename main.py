@@ -1,5 +1,4 @@
 import os
-import time
 import threading
 import requests
 import yfinance as yf
@@ -36,55 +35,49 @@ def send_telegram_message(text):
         except Exception as e:
             print("Telegram hatasi:", e)
 
-def analyze_ticker(symbol):
+def run_market_scan():
+    print("Otomatik piyasa taramasi baslatildi (Batch Mode)...")
     try:
-        ticker = yf.Ticker(symbol)
-        hist = ticker.history(period="1y")
+        # Tek bir istekte tüm sembollerin 1 yıllık verisini çek (Rate-limit engelini aşar)
+        data = yf.download(WATCHLIST, period="1y", group_by='ticker', threads=True)
         
-        if hist.empty or len(hist) < 200:
-            return
+        for symbol in WATCHLIST:
+            try:
+                # Toplu veriden ilgili sembolü çek
+                df = data[symbol] if len(WATCHLIST) > 1 else data
+                df = df.dropna(subset=['Close'])
+                
+                if df.empty or len(df) < 200:
+                    continue
 
-        current_price = hist['Close'].iloc[-1]
-        sma_200 = hist['Close'].rolling(window=200).mean().iloc[-1]
-        
-        info = ticker.info or {}
-        pe_ratio = info.get('trailingPE', 8.5)
-        if pe_ratio is None:
-            pe_ratio = 8.5
+                current_price = float(df['Close'].iloc[-1])
+                sma_200 = float(df['Close'].rolling(window=200).mean().iloc[-1])
 
-        rejections = []
+                rejections = []
+                if current_price < sma_200:
+                    rejections.append("200 SMA altinda")
 
-        if current_price < sma_200:
-            rejections.append("200 SMA altinda")
+                clean_symbol = symbol.replace('.IS', '')
+                currency = "TL" if ".IS" in symbol else "$"
 
-        if pe_ratio > 20:
-            rejections.append(f"F/K yüksek ({pe_ratio:.1f})")
+                if len(rejections) == 0:
+                    msg = (
+                        f"✅ ONAYLANDI (DALIO TREND FILTRESI)\n\n"
+                        f"Hisse: {clean_symbol}\n"
+                        f"Fiyat: {current_price:.2f} {currency}\n"
+                        f"200 SMA: {sma_200:.2f} {currency}\n\n"
+                        f"Durum: Yükseliş Trendi Onaylandı!"
+                    )
+                    send_telegram_message(msg)
 
-        clean_symbol = symbol.replace('.IS', '')
-        currency = "TL" if ".IS" in symbol else "$"
-        
-        if len(rejections) == 0:
-            msg = (
-                f"✅ ONAYLANDI (DALIO & MOBIUS FILTRESI)\n\n"
-                f"Hisse: {clean_symbol}\n"
-                f"Fiyat: {current_price:.2f} {currency}\n"
-                f"200 SMA: {sma_200:.2f} {currency}\n"
-                f"F/K Orani: {pe_ratio:.1f}\n\n"
-                f"Islem Durumu: Stratejik Filtrelerden Gecti!"
-            )
-            send_telegram_message(msg)
+            except Exception as e:
+                print(f"{symbol} analiz hatasi:", e)
 
     except Exception as e:
-        print(f"{symbol} analiz hatasi:", e)
-
-def run_market_scan():
-    print("Otomatik piyasa taramasi baslatildi...")
-    for symbol in WATCHLIST:
-        analyze_ticker(symbol)
-        time.sleep(1.5)  # yfinance rate-limit engelini asmak icin bekleme
+        print("Toplu veri çekme hatası:", e)
 
 def start_async_scan():
-    # Gunicorn Zaman Asimini Önlemek Icin Arka Plan Thread'i
+    # Sunucu zaman aşımını önlemek için arka plan thread kullanımı
     thread = threading.Thread(target=run_market_scan)
     thread.start()
 

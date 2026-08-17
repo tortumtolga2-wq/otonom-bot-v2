@@ -60,12 +60,14 @@ def calculate_rsi(series, period=14):
     return 100 - (100 / (1 + rs))
 
 def run_backtest():
-    """Piyasa rejimi, stop-loss, komisyon ve trend filtreli backtest simülasyonu"""
-    logging.info("Backtest simülasyonu başlatıldı...")
+    """Detaylı metrikler ve varlık bazlı kırılımlar içeren gelişmiş backtest raporu"""
+    logging.info("Detaylı backtest raporlama simülasyonu başlatıldı...")
     total_trades = 0
     winning_trades = 0
     processed_count = 0
     commission_rate = 0.001  # %0.1 Komisyon
+    
+    asset_results = {}
     
     # Piyasa Rejimi Referansı (SPY veya listedeki ilk varlık)
     market_ref_symbol = "SPY" if "SPY" in WATCHLIST else WATCHLIST[0]
@@ -84,6 +86,9 @@ def run_backtest():
 
             start_idx = max(200, len(df) - 120)
             end_idx = len(df) - 10
+            
+            sym_trades = 0
+            sym_wins = 0
 
             for i in range(start_idx, end_idx):
                 # Ayı Piyasası Rejimi Filtresi: Referans endeks 200 SMA altındaysa alım yapma
@@ -99,6 +104,7 @@ def run_backtest():
                 # Trend Takip Koşulları (Fiyat > 200 SMA, 200 SMA yükseliyor, RSI < 70)
                 if close > sma and sma > sma_past and r < 70:
                     total_trades += 1
+                    sym_trades += 1
                     
                     entry_price = close * (1 + commission_rate)
                     target = entry_price * 1.05 * (1 + commission_rate)
@@ -110,19 +116,29 @@ def run_backtest():
 
                     if hit_target and not hit_stop:
                         winning_trades += 1
+                        sym_wins += 1
+
+            if sym_trades > 0:
+                asset_results[symbol] = (sym_wins / sym_trades) * 100
 
         except Exception as b_err:
-            logging.error(f"Backtest hata detayı {symbol}: {b_err}")
+            logging.error(f"Raporlama hata detayı {symbol}: {b_err}")
 
     win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
+    
+    # En başarılı ilk 3 varlığı bulalım
+    top_assets = sorted(asset_results.items(), key=lambda x: x[1], reverse=True)[:3]
+    top_str = ", ".join([f"{k} (%{v:.0f})" for k, v in top_assets]) if top_assets else "Veri Yok"
+
     msg = (
-        f"📈 OTOMATİK BACKTEST RAPORU\n\n"
-        f"Referans Rejim: {market_ref_symbol}\n"
-        f"İşlenen Varlık: {processed_count}/{len(WATCHLIST)}\n"
-        f"Toplam Sinyal: {total_trades}\n"
-        f"Başarılı İşlem: {winning_trades}\n"
-        f"Kazanma Oranı: %{win_rate:.1f}\n\n"
-        f"Parametreler: Komisyon %0.1 | Stop %3 | Rejim Filtreli"
+        f"📊 DETAYLI STRATEJİ PERFORMANS RAPORU\n\n"
+        f"🌐 Rejim Referansı: {market_ref_symbol}\n"
+        f"📁 Taranan Varlık: {processed_count}/{len(WATCHLIST)}\n"
+        f"🎯 Toplam Sinyal: {total_trades}\n"
+        f"✅ Başarılı İşlem: {winning_trades}\n"
+        f"📈 Genel Başarı (Win Rate): %{win_rate:.1f}\n\n"
+        f"🏆 En İyi Performans Verenler:\n{top_str}\n\n"
+        f"⚙️ Parametreler: Komisyon %0.1 | Stop %3 | Rejim Aktif"
     )
     send_telegram_message(msg)
 

@@ -44,7 +44,7 @@ def calculate_rsi(series, period=14):
     return 100 - (100 / (1 + rs))
 
 def run_market_scan():
-    print("Otomatik piyasa taramasi baslatildi (Dalio & Mobius Tam Filtreli)...")
+    print("Otomatik piyasa taramasi baslatildi (Risk Yönetimi Dahil)...")
     try:
         data = yf.download(WATCHLIST, period="1y", group_by='ticker', threads=True)
         
@@ -72,8 +72,7 @@ def run_market_scan():
                 avg_volume_20 = float(df['Volume'].iloc[-21:-1].mean())
                 volume_ratio = current_volume / avg_volume_20 if avg_volume_20 > 0 else 1.0
 
-                # 4. Mobius: Temel Değerleme Filtreleri (F/K ve P/DD)
-                # ETF/Emtia için temel rasyo kontrolü atlanır
+                # 4. Mobius: Temel Değerleme Filtreleri
                 is_etf = symbol in ["GLD", "SLV", "XLE", "EEM", "VWO", "INDA", "MCHI", "EWZ", "FXI", "EZA"]
                 
                 pe_ratio = None
@@ -109,18 +108,25 @@ def run_market_scan():
                 currency = "TL" if ".IS" in symbol else "$"
 
                 if len(rejections) == 0:
+                    # Risk Yönetimi Seviyeleri
+                    stop_loss = sma_200_current * 0.98
+                    tp1 = current_price * 1.05
+                    tp2 = current_price * 1.10
+
                     pe_str = f"{pe_ratio:.1f}" if pe_ratio else "N/A (ETF)"
                     pb_str = f"{pb_ratio:.1f}" if pb_ratio else "N/A (ETF)"
                     
                     msg = (
                         f"🎯 MÜKEMMEL EŞLEŞME (DALIO & MOBIUS)\n\n"
                         f"Hisse: {clean_symbol}\n"
-                        f"Fiyat: {current_price:.2f} {currency}\n"
+                        f"Giriş Fiyatı: {current_price:.2f} {currency}\n"
                         f"200 SMA: {sma_200_current:.2f} {currency}\n"
-                        f"RSI (14): {rsi_current:.1f}\n"
-                        f"Hacim Artışı: {volume_ratio:.2f}x\n"
+                        f"RSI (14): {rsi_current:.1f} | Hacim: {volume_ratio:.2f}x\n"
                         f"F/K: {pe_str} | P/DD: {pb_str}\n\n"
-                        f"Durum: Yükseliş trendi, hacim onayı ve cazip değerleme bir arada!"
+                        f"📊 RİSK YÖNETİMİ HEDEFLERİ:\n"
+                        f"🛑 Stop-Loss: {stop_loss:.2f} {currency}\n"
+                        f"🎯 Hedef 1 (%5): {tp1:.2f} {currency}\n"
+                        f"🚀 Hedef 2 (%10): {tp2:.2f} {currency}"
                     )
                     send_telegram_message(msg)
 

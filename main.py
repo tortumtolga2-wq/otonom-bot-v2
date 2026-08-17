@@ -34,25 +34,42 @@ WATCHLIST = [
 ]
 
 def fetch_stooq_data(symbol):
-    """Stooq CSV verisini indirir, tarih ve sayısal tipleri garanti altına alır."""
+    """Stooq CSV verisini yönlendirme (302) takibi ve tarayıcı simülasyonu ile çeker."""
     url = f"https://stooq.com/q/d/l/?s={symbol.lower()}&i=d"
+    
+    session = requests.Session()
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5'
     }
+    
     try:
-        res = requests.get(url, headers=headers, timeout=10)
-        if res.status_code == 200 and len(res.content) > 100:
+        res = session.get(url, headers=headers, allow_redirects=True, timeout=12)
+        if res.status_code == 200 and len(res.text) > 50:
+            # CSV Parse
             df = pd.read_csv(io.StringIO(res.text))
+            
             if not df.empty and 'Close' in df.columns and 'Date' in df.columns:
-                # Tarih ve Sayısal Dönüşümleri Garanti Et
-                df['Date'] = pd.to_datetime(df['Date'])
+                # 'No data' yanıtını kontrol et
+                if 'No data' in str(df.iloc[0].values):
+                    logging.warning(f"{symbol} için Stooq veri döndürmedi (No data).")
+                    return pd.DataFrame()
+
+                # Dönüşümler
+                df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
                 df['Close'] = pd.to_numeric(df['Close'], errors='coerce')
                 
-                # Temizlik ve Eskiden Yeniye Doğru Sıralama (Ascending)
-                df = df.dropna(subset=['Close']).sort_values('Date', ascending=True).reset_index(drop=True)
+                df = df.dropna(subset=['Close', 'Date'])
+                df = df.sort_values('Date', ascending=True).reset_index(drop=True)
                 return df
+            else:
+                logging.warning(f"{symbol} CSV sütunları eksik veya boş.")
+        else:
+            logging.error(f"{symbol} HTTP Hata Kodu: {res.status_code}")
     except Exception as e:
-        logging.error(f"{symbol} Stooq veri çekme hatası: {e}")
+        logging.error(f"{symbol} Stooq çekim hatası: {e}")
+        
     return pd.DataFrame()
 
 def send_telegram_message(text):
@@ -142,6 +159,7 @@ def run_backtest():
     logging.info("Backtest simülasyonu başlatıldı...")
     total_trades = 0
     winning_trades = 0
+    processed_count = 0
     
     for symbol in WATCHLIST:
         try:
@@ -149,10 +167,10 @@ def run_backtest():
             if df.empty or len(df) < 210:
                 continue
 
+            processed_count += 1
             sma200 = df['Close'].rolling(200).mean()
             rsi = calculate_rsi(df['Close'])
 
-            # Test periyodu: Son 120 bar
             start_idx = max(200, len(df) - 120)
             end_idx = len(df) - 10
 
@@ -162,16 +180,13 @@ def run_backtest():
                 sma_past = float(sma200.iloc[i-15])
                 r = float(rsi.iloc[i])
 
-                # Trend ve RSI Uygunluğu
                 if close > sma and sma > sma_past and r < 70:
                     total_trades += 1
-                    target = close * 1.05
+                    target = close * 1.03  # Hedef %3 olarak esnetildi
                     stop = sma * 0.98
 
-                    # Sonraki 10 barı kontrol et
                     future_prices = df['Close'].iloc[i+1:i+11].values
                     
-                    # Hedef ve Stop Kontrolü
                     hit_target = any(future_prices >= target)
                     hit_stop = any(future_prices <= stop)
 
@@ -184,11 +199,11 @@ def run_backtest():
     win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
     msg = (
         f"📈 GEÇMİŞE DÖNÜK BAŞARIM TESTİ (BACKTEST)\n\n"
-        f"Test Periyodu: Son 6 Ay\n"
+        f"Başarıyla İşlenen Sembol: {processed_count}/{len(WATCHLIST)}\n"
         f"Toplam Üretilen Sinyal: {total_trades}\n"
-        f"Başarılı İşlem (TP1 %5): {winning_trades}\n"
+        f"Başarılı İşlem (TP1 %3): {winning_trades}\n"
         f"Kazanma Oranı (Win Rate): %{win_rate:.1f}\n\n"
-        f"Veri Kaynağı: Stooq Engine"
+        f"Veri Kaynağı: Stooq Engine v2"
     )
     send_telegram_message(msg)
 

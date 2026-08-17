@@ -1,10 +1,16 @@
 def run_backtest():
-    logging.info("Backtest simülasyonu başlatıldı (Stop %3 + Komisyon Kesintili)...")
+    logging.info("Backtest simülasyonu başlatıldı (Piyasa Rejimi Filtreli + Stop %3 + Komisyon)...")
     total_trades = 0
     winning_trades = 0
     processed_count = 0
     commission_rate = 0.001  # %0.1 alım/satım komisyon oranı
     
+    # 1. Adım: Piyasa Rejimi Tespiti için referans varlık (Örn: S&P 500 - SPY veya yaygın bir endeks)
+    # Watchlist içinden genel piyasa eğilimini ölçmek için ana bir varlık seçelim (yoksa ilk varlığı baz alır)
+    market_ref_symbol = "SPY" if "SPY" in WATCHLIST else WATCHLIST[0]
+    market_df = fetch_chart_data(market_ref_symbol)
+    market_sma200 = market_df['Close'].rolling(200).mean() if not market_df.empty else pd.Series()
+
     for symbol in WATCHLIST:
         try:
             df = fetch_chart_data(symbol)
@@ -19,6 +25,14 @@ def run_backtest():
             end_idx = len(df) - 10
 
             for i in range(start_idx, end_idx):
+                # Piyasa Rejimi Kontrolü (Ayı Piyasası Filtresi)
+                # Referans piyasa fiyatı 200 SMA'nın altındaysa yeni alım sinyallerini atla
+                if not market_sma200.empty and i < len(market_sma200):
+                    market_close = float(market_df['Close'].iloc[i])
+                    market_sma = float(market_sma200.iloc[i])
+                    if market_close < market_sma:
+                        continue  # Ayı piyasasında alım yapma!
+
                 close = float(df['Close'].iloc[i])
                 sma = float(sma200.iloc[i])
                 sma_past = float(sma200.iloc[i-15])
@@ -27,8 +41,6 @@ def run_backtest():
                 if close > sma and sma > sma_past and r < 70:
                     total_trades += 1
                     
-                    # Komisyon maliyeti dahil edilmiş net hedef ve stop seviyeleri
-                    # Alışta komisyon ödenir, hedefe ulaşırken çift yönlü komisyon maliyeti düşülür
                     entry_price = close * (1 + commission_rate)
                     target = entry_price * 1.05 * (1 + commission_rate)
                     stop = sma * 0.97
@@ -45,11 +57,12 @@ def run_backtest():
 
     win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
     msg = (
-        f"📈 NET BAŞARIM TESTİ (KOMİSYONLU & STOP %3)\n\n"
+        f"📈 PİYASA REJİMLİ NET BAŞARIM TESTİ\n\n"
+        f"Referans Endeks Filtresi: Aktif ({market_ref_symbol})\n"
         f"Başarıyla İşlenen Sembol: {processed_count}/{len(WATCHLIST)}\n"
         f"Toplam Üretilen Sinyal: {total_trades}\n"
         f"Net Başarılı İşlem: {winning_trades}\n"
         f"Kazanma Oranı (Win Rate): %{win_rate:.1f}\n\n"
-        f"Komisyon Oranı: %{commission_rate*100:.2f} (Alış/Satış)"
+        f"Komisyon: %{commission_rate*100:.2f} | Stop: %3"
     )
     send_telegram_message(msg)

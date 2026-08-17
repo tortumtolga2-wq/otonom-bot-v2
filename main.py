@@ -4,7 +4,6 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# Telegram Bot Yapılandırması
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
@@ -12,53 +11,65 @@ def apply_dalio_mobius_filters(data):
     """
     Ray Dalio & Mark Mobius Yatırım Felsefeleri Filtre Motoru
     """
-    price = float(data.get('price', 0))
-    score_str = str(data.get('analyst_score', '0')).replace('%', '').split()[0]
     try:
-        score = float(score_str)
-    except ValueError:
-        score = 50.0
+        price = float(data.get('price', 0))
+    except (ValueError, TypeError):
+        price = 0.0
 
-    # Teknik ve Temel Metrikler (Sinyalden gelen veya varsayılan değerler)
-    sma_200 = float(data.get('sma_200', price * 0.95)) # Dalio: Trend Kontrolü
-    pe_ratio = float(data.get('pe_ratio', 8.5))         # Mobius: F/K Çarpanı (Düşük/Makul F/K)
-    volume_surge = bool(data.get('volume_surge', True))  # Mobius: Hacim Değişimi
+    # Analist skoru içerisindeki sayısal değeri güvenli şekilde çıkarma
+    raw_score = str(data.get('analyst_score', '0'))
+    score = 50.0
+    for token in raw_score.replace('%', '').split():
+        try:
+            score = float(token)
+            break
+        except ValueError:
+            continue
+
+    try:
+        sma_200 = float(data.get('sma_200', price * 0.95))
+    except (ValueError, TypeError):
+        sma_200 = price * 0.95
+
+    try:
+        pe_ratio = float(data.get('pe_ratio', 8.5))
+    except (ValueError, TypeError):
+        pe_ratio = 8.5
 
     rejections = []
 
-    # Ray Dalio Filtresi: Fiyat 200 günlük hareketli ortalamanın altındaysa ayı rejimindedir
+    # Ray Dalio Filtresi: Trend Kontrolü
     if price < sma_200:
         rejections.append("Ray Dalio Filtresi: Fiyat 200 SMA altında (Makro Ayı Trendi).")
 
-    # Mark Mobius Filtresi: Aşırı pahalı değerlemeleri ve hacimsiz hareketleri eler
+    # Mark Mobius Filtresi: Değerleme Kontrolü
     if pe_ratio > 20:
         rejections.append("Mark Mobius Filtresi: F/K oranı çok yüksek (>20 Değerleme Riski).")
     
     if score < 70:
-        rejections.append("Analist / Sistem skoru yetersiz (<%70).")
+        rejections.append(f"Analist / Sistem skoru yetersiz (%{score:.0f} < %70).")
 
     passed = len(rejections) == 0
     return passed, rejections
 
 @app.route('/', methods=['GET'])
 def home():
-    return "Otonom Bot Sunucusu 7/24 Aktif! (Strateji Filtreleri Aktor)", 200
+    return "Otonom Bot Sunucusu 7/24 Aktif! (Strateji Filtreleri Aktif)", 200
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
     data = request.get_json(silent=True) or {}
-    ticker = data.get('ticker', 'BİLİNMİYOR')
+    ticker = data.get('ticker', 'BILINMIYOR')
     price = data.get('price', '0.00')
     score = data.get('analyst_score', 'N/A')
 
-    # Strateji Filtrelerini Çalıştır
     is_approved, reason_list = apply_dalio_mobius_filters(data)
 
     if is_approved:
         status_header = "✅ <b>ONAYLANDI (DALIO & MOBIUS FILTRESI)</b>"
-        action_text = "<b>İşlem Durumu:</b> AL Sinyali Stratejiye Uygun!"
+        action_text = "<b>Islem Durumu:</b> AL Sinyali Stratejiye Uygun!"
     else:
-        status_header = "⚠️ <b>SİNYAL REDDEDİLDİ (RISK FILTRESI)</b>"
+        status_header = "⚠️ <b>SINYAL REDDEDILDI (RISK FILTRESI)</b>"
         reasons = "\n".join([f"• {r}" for r in reason_list])
         action_text = f"<b>Red Nedenleri:</b>\n{reasons}"
 
@@ -78,7 +89,8 @@ def webhook():
             "parse_mode": "HTML"
         }
         try:
-            requests.post(url, json=payload, timeout=5)
+            res = requests.post(url, json=payload, timeout=5)
+            print("Telegram Yanit:", res.status_code, res.text)
         except Exception as e:
             print("Telegram mesaj hatasi:", e)
 

@@ -39,10 +39,13 @@ def send_telegram_message(text):
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
         try:
-            res = requests.post(url, json=payload, timeout=8)
+            res = requests.post(url, json=payload, timeout=10)
             res.raise_for_status()
+            logging.info("Telegram mesaji basariyla gonderildi.")
         except Exception as e:
             logging.error(f"Telegram mesaj gonderme hatasi: {e}")
+    else:
+        logging.warning("TELEGRAM_BOT_TOKEN veya TELEGRAM_CHAT_ID tanimlanmamis!")
 
 def calculate_rsi(series, period=14):
     delta = series.diff()
@@ -180,7 +183,6 @@ def run_backtest():
                 rsi = calculate_rsi(df['Close'])
                 vol_avg = df['Volume'].rolling(20).mean()
 
-                # Son 6 ayı test et (yaklaşık 120 işlem günü)
                 for i in range(len(df)-120, len(df)-10):
                     close = df['Close'].iloc[i]
                     sma = sma200.iloc[i]
@@ -189,13 +191,11 @@ def run_backtest():
                     v = df['Volume'].iloc[i]
                     v_a = vol_avg.iloc[i]
 
-                    # Al Sinyali Şartları
                     if close > sma and sma > sma_past and r < 70 and (v > v_a * 1.2 if v_a > 0 else True):
                         total_trades += 1
                         target = close * 1.05
                         stop = sma * 0.98
 
-                        # Sonraki 10 günün seyrine bak
                         future_prices = df['Close'].iloc[i+1:i+11]
                         hit_target = any(future_prices >= target)
                         hit_stop = any(future_prices <= stop)
@@ -246,6 +246,14 @@ def manual_scan():
 def manual_backtest():
     start_async_backtest()
     return jsonify({"status": "backtest_initiated_async"}), 200
+
+@app.route('/status', methods=['GET'])
+def status():
+    return jsonify({
+        "bot_status": "ONLINE",
+        "watchlist_count": len(WATCHLIST),
+        "scheduler_running": scheduler.running
+    }), 200
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))

@@ -1,10 +1,17 @@
 import os
 import threading
+import logging
 import requests
 import yfinance as yf
 import pandas as pd
 from flask import Flask, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
+
+# Logging Yapılandırması
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 
 app = Flask(__name__)
 
@@ -32,9 +39,10 @@ def send_telegram_message(text):
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
         try:
-            requests.post(url, json=payload, timeout=8)
+            res = requests.post(url, json=payload, timeout=8)
+            res.raise_for_status()
         except Exception as e:
-            print("Telegram hatasi:", e)
+            logging.error(f"Telegram mesaj gonderme hatasi: {e}")
 
 def calculate_rsi(series, period=14):
     delta = series.diff()
@@ -44,7 +52,7 @@ def calculate_rsi(series, period=14):
     return 100 - (100 / (1 + rs))
 
 def run_market_scan(is_daily_summary=False):
-    print("Piyasa taramasi baslatildi...")
+    logging.info(f"Piyasa taramasi baslatildi (Ozellik: {'Gunluk Ozet' if is_daily_summary else 'Anlik Tarama'})...")
     passed_symbols = []
     
     try:
@@ -56,6 +64,7 @@ def run_market_scan(is_daily_summary=False):
                 df = df.dropna(subset=['Close'])
                 
                 if df.empty or len(df) < 220:
+                    logging.warning(f"{symbol}: Yetersiz veri (Uzunluk: {len(df)})")
                     continue
 
                 current_price = float(df['Close'].iloc[-1])
@@ -81,36 +90,41 @@ def run_market_scan(is_daily_summary=False):
                 pb_ratio = None
 
                 if not is_etf:
-                    ticker = yf.Ticker(symbol)
-                    info = ticker.info or {}
-                    pe_ratio = info.get('trailingPE')
-                    pb_ratio = info.get('priceToBook')
+                    try:
+                        ticker = yf.Ticker(symbol)
+                        info = ticker.info or {}
+                        pe_ratio = info.get('trailingPE')
+                        pb_ratio = info.get('priceToBook')
+                    except Exception as info_err:
+                        logging.warning(f"{symbol} temel veriler cekilemedi: {info_err}")
 
                 rejections = []
 
                 if current_price < sma_200_current:
-                    rejections.append("Fiyat 200 SMA altında")
+                    rejections.append("Fiyat < 200 SMA")
 
                 if sma_200_current <= sma_200_past:
-                    rejections.append("200 SMA eğimi aşağı/yatay")
+                    rejections.append("200 SMA Egimi Dusuk")
 
                 if rsi_current > 70:
-                    rejections.append(f"RSI aşırı alımda ({rsi_current:.1f})")
+                    rejections.append(f"RSI > 70 ({rsi_current:.1f})")
 
                 if volume_ratio < 1.2:
-                    rejections.append(f"Hacim yetersiz ({volume_ratio:.2f}x)")
+                    rejections.append(f"Hacim Yetersiz ({volume_ratio:.2f}x)")
 
                 if not is_etf:
                     if pe_ratio is not None and pe_ratio > 20:
-                        rejections.append(f"F/K yüksek ({pe_ratio:.1f})")
+                        rejections.append(f"F/K > 20 ({pe_ratio:.1f})")
                     if pb_ratio is not None and pb_ratio > 3.0:
-                        rejections.append(f"P/DD yüksek ({pb_ratio:.1f})")
+                        rejections.append(f"P/DD > 3.0 ({pb_ratio:.1f})")
 
                 clean_symbol = symbol.replace('.IS', '')
                 currency = "TL" if ".IS" in symbol else "$"
 
                 if len(rejections) == 0:
                     passed_symbols.append(clean_symbol)
+                    logging.info(f"✅ SİNYAL ONAYLANDI: {clean_symbol}")
+                    
                     stop_loss = sma_200_current * 0.98
                     tp1 = current_price * 1.05
                     tp2 = current_price * 1.10
@@ -132,11 +146,12 @@ def run_market_scan(is_daily_summary=False):
                             f"🚀 Hedef 2 (%10): {tp2:.2f} {currency}"
                         )
                         send_telegram_message(msg)
+                else:
+                    logging.debug(f"❌ {clean_symbol} elendi: {', '.join(rejections)}")
 
-            except Exception as e:
-                print(f"{symbol} analiz hatasi:", e)
+            except Exception as symbol_err:
+                logging.error(f"{symbol} analizinde beklenmeyen hata: {symbol_err}")
 
-        # Günlük Özet Raporu Gönderimi
         if is_daily_summary:
             summary_msg = (
                 f"🌙 GÜNLÜK PİYASA ÖZET RAPORU\n\n"
@@ -146,18 +161,17 @@ def run_market_scan(is_daily_summary=False):
                 f"Sistem 7/24 aktif çalışmaya devam ediyor."
             )
             send_telegram_message(summary_msg)
+            logging.info("Gunluk ozet raporu Telegram'a iletildi.")
 
     except Exception as e:
-        print("Toplu veri çekme hatası:", e)
+        logging.error(f"Toplu veri çekme hatası: {e}")
 
 def start_async_scan(is_daily_summary=False):
     thread = threading.Thread(target=run_market_scan, args=(is_daily_summary,))
     thread.start()
 
 scheduler = BackgroundScheduler(daemon=True)
-# 15 dakikalık düzenli tarama
 scheduler.add_job(run_market_scan, 'interval', minutes=15)
-# Her gece saat 23:00'da günlük özet raporu (UTC ayarlarına göre düzenlenebilir)
 scheduler.add_job(run_market_scan, 'cron', hour=20, minute=0, kwargs={'is_daily_summary': True})
 scheduler.start()
 

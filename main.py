@@ -44,8 +44,6 @@ def send_telegram_message(text):
             logging.info("Telegram mesaji basariyla gonderildi.")
         except Exception as e:
             logging.error(f"Telegram mesaj gonderme hatasi: {e}")
-    else:
-        logging.warning("TELEGRAM_BOT_TOKEN veya TELEGRAM_CHAT_ID tanimlanmamis!")
 
 def calculate_rsi(series, period=14):
     delta = series.diff()
@@ -59,6 +57,7 @@ def run_market_scan(is_daily_summary=False):
     passed_symbols = []
     
     try:
+        # Toplu indirme: Cloud IP bloklamalarını engeller
         data = yf.download(WATCHLIST, period="1y", group_by='ticker', threads=True)
         
         for symbol in WATCHLIST:
@@ -85,20 +84,6 @@ def run_market_scan(is_daily_summary=False):
                 avg_volume_20 = float(df['Volume'].iloc[-21:-1].mean())
                 volume_ratio = current_volume / avg_volume_20 if avg_volume_20 > 0 else 1.0
 
-                # 4. Mobius: Temel Değerleme Filtreleri
-                is_etf = symbol in ["GLD", "SLV", "XLE", "EEM", "VWO", "INDA", "MCHI", "EWZ", "FXI", "EZA"]
-                
-                pe_ratio = None
-                pb_ratio = None
-
-                if not is_etf:
-                    try:
-                        ticker = yf.Ticker(symbol)
-                        pe_ratio = ticker.info.get('trailingPE')
-                        pb_ratio = ticker.info.get('priceToBook')
-                    except Exception:
-                        pass
-
                 rejections = []
 
                 if current_price < sma_200_current:
@@ -110,14 +95,8 @@ def run_market_scan(is_daily_summary=False):
                 if rsi_current > 70:
                     rejections.append(f"RSI > 70 ({rsi_current:.1f})")
 
-                if volume_ratio < 1.2:
+                if volume_ratio < 1.1:
                     rejections.append(f"Hacim Yetersiz ({volume_ratio:.2f}x)")
-
-                if not is_etf and pe_ratio is not None and pb_ratio is not None:
-                    if pe_ratio > 20:
-                        rejections.append(f"F/K > 20 ({pe_ratio:.1f})")
-                    if pb_ratio > 3.0:
-                        rejections.append(f"P/DD > 3.0 ({pb_ratio:.1f})")
 
                 clean_symbol = symbol.replace('.IS', '')
                 currency = "TL" if ".IS" in symbol else "$"
@@ -130,23 +109,21 @@ def run_market_scan(is_daily_summary=False):
                     tp1 = current_price * 1.05
                     tp2 = current_price * 1.10
 
-                    pe_str = f"{pe_ratio:.1f}" if pe_ratio else "N/A"
-                    pb_str = f"{pb_ratio:.1f}" if pb_ratio else "N/A"
-                    
                     if not is_daily_summary:
                         msg = (
-                            f"🎯 MÜKEMMEL EŞLEŞME (DALIO & MOBIUS)\n\n"
+                            f"🎯 MÜKEMMEL EŞLEŞME (DALIO & MOBIUS STRATEJİSİ)\n\n"
                             f"Hisse: {clean_symbol}\n"
                             f"Giriş Fiyatı: {current_price:.2f} {currency}\n"
                             f"200 SMA: {sma_200_current:.2f} {currency}\n"
-                            f"RSI (14): {rsi_current:.1f} | Hacim: {volume_ratio:.2f}x\n"
-                            f"F/K: {pe_str} | P/DD: {pb_str}\n\n"
+                            f"RSI (14): {rsi_current:.1f} | Hacim Artışı: {volume_ratio:.2f}x\n\n"
                             f"📊 RİSK YÖNETİMİ HEDEFLERİ:\n"
                             f"🛑 Stop-Loss: {stop_loss:.2f} {currency}\n"
                             f"🎯 Hedef 1 (%5): {tp1:.2f} {currency}\n"
                             f"🚀 Hedef 2 (%10): {tp2:.2f} {currency}"
                         )
                         send_telegram_message(msg)
+                else:
+                    logging.info(f"❌ {clean_symbol} elendi: {', '.join(rejections)}")
 
             except Exception as symbol_err:
                 logging.error(f"{symbol} analizinde hata: {symbol_err}")
@@ -183,6 +160,7 @@ def run_backtest():
                 rsi = calculate_rsi(df['Close'])
                 vol_avg = df['Volume'].rolling(20).mean()
 
+                # Son 6 ayı test et (120 işlem günü)
                 for i in range(len(df)-120, len(df)-10):
                     close = df['Close'].iloc[i]
                     sma = sma200.iloc[i]
@@ -191,7 +169,8 @@ def run_backtest():
                     v = df['Volume'].iloc[i]
                     v_a = vol_avg.iloc[i]
 
-                    if close > sma and sma > sma_past and r < 70 and (v > v_a * 1.2 if v_a > 0 else True):
+                    # Esnetilmiş Trend & Hacim Sinyali Şartı
+                    if close > sma and sma > sma_past and r < 70 and (v > v_a * 1.1 if v_a > 0 else True):
                         total_trades += 1
                         target = close * 1.05
                         stop = sma * 0.98

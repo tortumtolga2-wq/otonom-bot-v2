@@ -43,8 +43,10 @@ def calculate_rsi(series, period=14):
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
-def run_market_scan():
-    print("Otomatik piyasa taramasi baslatildi (Risk Yönetimi Dahil)...")
+def run_market_scan(is_daily_summary=False):
+    print("Piyasa taramasi baslatildi...")
+    passed_symbols = []
+    
     try:
         data = yf.download(WATCHLIST, period="1y", group_by='ticker', threads=True)
         
@@ -108,7 +110,7 @@ def run_market_scan():
                 currency = "TL" if ".IS" in symbol else "$"
 
                 if len(rejections) == 0:
-                    # Risk Yönetimi Seviyeleri
+                    passed_symbols.append(clean_symbol)
                     stop_loss = sma_200_current * 0.98
                     tp1 = current_price * 1.05
                     tp2 = current_price * 1.10
@@ -116,32 +118,47 @@ def run_market_scan():
                     pe_str = f"{pe_ratio:.1f}" if pe_ratio else "N/A (ETF)"
                     pb_str = f"{pb_ratio:.1f}" if pb_ratio else "N/A (ETF)"
                     
-                    msg = (
-                        f"🎯 MÜKEMMEL EŞLEŞME (DALIO & MOBIUS)\n\n"
-                        f"Hisse: {clean_symbol}\n"
-                        f"Giriş Fiyatı: {current_price:.2f} {currency}\n"
-                        f"200 SMA: {sma_200_current:.2f} {currency}\n"
-                        f"RSI (14): {rsi_current:.1f} | Hacim: {volume_ratio:.2f}x\n"
-                        f"F/K: {pe_str} | P/DD: {pb_str}\n\n"
-                        f"📊 RİSK YÖNETİMİ HEDEFLERİ:\n"
-                        f"🛑 Stop-Loss: {stop_loss:.2f} {currency}\n"
-                        f"🎯 Hedef 1 (%5): {tp1:.2f} {currency}\n"
-                        f"🚀 Hedef 2 (%10): {tp2:.2f} {currency}"
-                    )
-                    send_telegram_message(msg)
+                    if not is_daily_summary:
+                        msg = (
+                            f"🎯 MÜKEMMEL EŞLEŞME (DALIO & MOBIUS)\n\n"
+                            f"Hisse: {clean_symbol}\n"
+                            f"Giriş Fiyatı: {current_price:.2f} {currency}\n"
+                            f"200 SMA: {sma_200_current:.2f} {currency}\n"
+                            f"RSI (14): {rsi_current:.1f} | Hacim: {volume_ratio:.2f}x\n"
+                            f"F/K: {pe_str} | P/DD: {pb_str}\n\n"
+                            f"📊 RİSK YÖNETİMİ HEDEFLERİ:\n"
+                            f"🛑 Stop-Loss: {stop_loss:.2f} {currency}\n"
+                            f"🎯 Hedef 1 (%5): {tp1:.2f} {currency}\n"
+                            f"🚀 Hedef 2 (%10): {tp2:.2f} {currency}"
+                        )
+                        send_telegram_message(msg)
 
             except Exception as e:
                 print(f"{symbol} analiz hatasi:", e)
 
+        # Günlük Özet Raporu Gönderimi
+        if is_daily_summary:
+            summary_msg = (
+                f"🌙 GÜNLÜK PİYASA ÖZET RAPORU\n\n"
+                f"Taranan Enstrüman: {len(WATCHLIST)}\n"
+                f"Filtreleri Geçen: {len(passed_symbols)}\n"
+                f"Aktif Sinyaller: {', '.join(passed_symbols) if passed_symbols else 'Yok'}\n\n"
+                f"Sistem 7/24 aktif çalışmaya devam ediyor."
+            )
+            send_telegram_message(summary_msg)
+
     except Exception as e:
         print("Toplu veri çekme hatası:", e)
 
-def start_async_scan():
-    thread = threading.Thread(target=run_market_scan)
+def start_async_scan(is_daily_summary=False):
+    thread = threading.Thread(target=run_market_scan, args=(is_daily_summary,))
     thread.start()
 
 scheduler = BackgroundScheduler(daemon=True)
+# 15 dakikalık düzenli tarama
 scheduler.add_job(run_market_scan, 'interval', minutes=15)
+# Her gece saat 23:00'da günlük özet raporu (UTC ayarlarına göre düzenlenebilir)
+scheduler.add_job(run_market_scan, 'cron', hour=20, minute=0, kwargs={'is_daily_summary': True})
 scheduler.start()
 
 @app.route('/', methods=['GET'])

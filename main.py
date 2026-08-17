@@ -44,7 +44,7 @@ def calculate_rsi(series, period=14):
     return 100 - (100 / (1 + rs))
 
 def run_market_scan():
-    print("Otomatik piyasa taramasi baslatildi (Gelişmiş Trend & RSI Filtreli)...")
+    print("Otomatik piyasa taramasi baslatildi (Trend, RSI & Hacim Filtreli)...")
     try:
         data = yf.download(WATCHLIST, period="1y", group_by='ticker', threads=True)
         
@@ -58,41 +58,46 @@ def run_market_scan():
 
                 current_price = float(df['Close'].iloc[-1])
                 
-                # 200 SMA Hesaplaması ve Eğim Mantığı
+                # 1. 200 SMA Eğim
                 sma_200_series = df['Close'].rolling(window=200).mean()
                 sma_200_current = float(sma_200_series.iloc[-1])
-                sma_200_past = float(sma_200_series.iloc[-20])  # 20 işlem günü önceki 200 SMA
+                sma_200_past = float(sma_200_series.iloc[-20])
 
-                # RSI (14) Hesaplaması
+                # 2. RSI (14)
                 rsi_series = calculate_rsi(df['Close'])
                 rsi_current = float(rsi_series.iloc[-1])
 
+                # 3. Hacim Analizi (Son hacim vs 20 günlük ortalama hacim)
+                current_volume = float(df['Volume'].iloc[-1])
+                avg_volume_20 = float(df['Volume'].iloc[-21:-1].mean())
+                volume_ratio = current_volume / avg_volume_20 if avg_volume_20 > 0 else 1.0
+
                 rejections = []
 
-                # Filtre 1: Fiyat 200 SMA üzerinde mi?
                 if current_price < sma_200_current:
                     rejections.append("Fiyat 200 SMA altında")
 
-                # Filtre 2: 200 SMA yukarı yönlü eğimli mi? (Trend Yönü Onayı)
                 if sma_200_current <= sma_200_past:
                     rejections.append("200 SMA eğimi aşağı/yatay")
 
-                # Filtre 3: RSI aşırı alım bölgesinde mi? (> 70 ise riskli)
                 if rsi_current > 70:
                     rejections.append(f"RSI aşırı alımda ({rsi_current:.1f})")
+
+                if volume_ratio < 1.2:
+                    rejections.append(f"Hacim yetersiz (Ortalamanin {volume_ratio:.2f}x kati)")
 
                 clean_symbol = symbol.replace('.IS', '')
                 currency = "TL" if ".IS" in symbol else "$"
 
-                # Tüm filtrelerden geçen kaliteli sinyaller
                 if len(rejections) == 0:
                     msg = (
-                        f"✅ GÜÇLÜ TREND ONAYLANDI\n\n"
+                        f"🚀 YÜKSEK HACİMLİ TREND ONAYLANDI\n\n"
                         f"Hisse: {clean_symbol}\n"
                         f"Fiyat: {current_price:.2f} {currency}\n"
                         f"200 SMA: {sma_200_current:.2f} {currency}\n"
-                        f"RSI (14): {rsi_current:.1f}\n\n"
-                        f"Durum: Yükseliş trendi güçlü, 200 SMA eğimi yukarı ve tepe noktada değil."
+                        f"RSI (14): {rsi_current:.1f}\n"
+                        f"Hacim Artışı: {volume_ratio:.2f}x (Ortalama üstü)\n\n"
+                        f"Durum: Güçlü hacimle desteklenen trend girişi!"
                     )
                     send_telegram_message(msg)
 

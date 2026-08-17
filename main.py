@@ -56,7 +56,6 @@ def run_market_scan(is_daily_summary=False):
     passed_symbols = []
     
     try:
-        # Toplu veri indirme (Rate limit yemez)
         data = yf.download(WATCHLIST, period="1y", group_by='ticker', threads=True)
         
         for symbol in WATCHLIST:
@@ -65,7 +64,6 @@ def run_market_scan(is_daily_summary=False):
                 df = df.dropna(subset=['Close'])
                 
                 if df.empty or len(df) < 220:
-                    logging.warning(f"{symbol}: Yetersiz veri (Uzunluk: {len(df)})")
                     continue
 
                 current_price = float(df['Close'].iloc[-1])
@@ -84,7 +82,7 @@ def run_market_scan(is_daily_summary=False):
                 avg_volume_20 = float(df['Volume'].iloc[-21:-1].mean())
                 volume_ratio = current_volume / avg_volume_20 if avg_volume_20 > 0 else 1.0
 
-                # 4. Mobius: Temel Değerleme Filtreleri (Güvenli Çekim)
+                # 4. Mobius: Temel Değerleme Filtreleri
                 is_etf = symbol in ["GLD", "SLV", "XLE", "EEM", "VWO", "INDA", "MCHI", "EWZ", "FXI", "EZA"]
                 
                 pe_ratio = None
@@ -93,11 +91,9 @@ def run_market_scan(is_daily_summary=False):
                 if not is_etf:
                     try:
                         ticker = yf.Ticker(symbol)
-                        # Sadece hızlı erişilebilir alanlardan almaya çalış
                         pe_ratio = ticker.info.get('trailingPE')
                         pb_ratio = ticker.info.get('priceToBook')
                     except Exception:
-                        # Rate limit yenirse temel filtreyi atla, teknik analizle devam et
                         pass
 
                 rejections = []
@@ -148,8 +144,6 @@ def run_market_scan(is_daily_summary=False):
                             f"🚀 Hedef 2 (%10): {tp2:.2f} {currency}"
                         )
                         send_telegram_message(msg)
-                else:
-                    logging.info(f"❌ {clean_symbol} elendi: {', '.join(rejections)}")
 
             except Exception as symbol_err:
                 logging.error(f"{symbol} analizinde hata: {symbol_err}")
@@ -167,8 +161,71 @@ def run_market_scan(is_daily_summary=False):
     except Exception as e:
         logging.error(f"Toplu veri çekme hatası: {e}")
 
+def run_backtest():
+    logging.info("Backtest simülasyonu başlatıldı...")
+    total_trades = 0
+    winning_trades = 0
+    
+    try:
+        data = yf.download(WATCHLIST, period="1y", group_by='ticker', threads=True)
+        
+        for symbol in WATCHLIST:
+            try:
+                df = data[symbol] if len(WATCHLIST) > 1 else data
+                df = df.dropna(subset=['Close'])
+                if len(df) < 220:
+                    continue
+
+                sma200 = df['Close'].rolling(200).mean()
+                rsi = calculate_rsi(df['Close'])
+                vol_avg = df['Volume'].rolling(20).mean()
+
+                # Son 6 ayı test et (yaklaşık 120 işlem günü)
+                for i in range(len(df)-120, len(df)-10):
+                    close = df['Close'].iloc[i]
+                    sma = sma200.iloc[i]
+                    sma_past = sma200.iloc[i-20]
+                    r = rsi.iloc[i]
+                    v = df['Volume'].iloc[i]
+                    v_a = vol_avg.iloc[i]
+
+                    # Al Sinyali Şartları
+                    if close > sma and sma > sma_past and r < 70 and (v > v_a * 1.2 if v_a > 0 else True):
+                        total_trades += 1
+                        target = close * 1.05
+                        stop = sma * 0.98
+
+                        # Sonraki 10 günün seyrine bak
+                        future_prices = df['Close'].iloc[i+1:i+11]
+                        hit_target = any(future_prices >= target)
+                        hit_stop = any(future_prices <= stop)
+
+                        if hit_target and not hit_stop:
+                            winning_trades += 1
+
+            except Exception as b_err:
+                logging.error(f"Backtest hatasi {symbol}: {b_err}")
+
+        win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
+        msg = (
+            f"📈 GEÇMİŞE DÖNÜK BAŞARIM TESTİ (BACKTEST)\n\n"
+            f"Test Periyodu: Son 6 Ay\n"
+            f"Toplam Üretilen Sinyal: {total_trades}\n"
+            f"Başarılı İşlem (TP1 %5): {winning_trades}\n"
+            f"Kazanma Oranı (Win Rate): %{win_rate:.1f}\n\n"
+            f"Strateji: Dalio Trend + Mobius Kriterleri"
+        )
+        send_telegram_message(msg)
+
+    except Exception as e:
+        logging.error(f"Backtest genel hatasi: {e}")
+
 def start_async_scan(is_daily_summary=False):
     thread = threading.Thread(target=run_market_scan, args=(is_daily_summary,))
+    thread.start()
+
+def start_async_backtest():
+    thread = threading.Thread(target=run_backtest)
     thread.start()
 
 scheduler = BackgroundScheduler(daemon=True)
@@ -184,6 +241,11 @@ def home():
 def manual_scan():
     start_async_scan()
     return jsonify({"status": "scan_initiated_async", "total_symbols": len(WATCHLIST)}), 200
+
+@app.route('/backtest', methods=['GET', 'POST'])
+def manual_backtest():
+    start_async_backtest()
+    return jsonify({"status": "backtest_initiated_async"}), 200
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))

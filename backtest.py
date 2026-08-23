@@ -2,53 +2,69 @@
 import pandas as pd
 import yfinance as yf
 
-def run_historical_backtest(symbol="AAPL"):
+def run_historical_backtest(symbol="NVDA"):
     """
-    Hacim filtresi ve %5 TP / %3 SL kurallarıyla geçmiş veriler üzerinde backtest yapar.
+    Hacim filtresi ve TP / SL ile geçmiş veriler üzerinde backtest yapar.
     """
     try:
         df = yf.download(symbol, period="6mo", interval="1d", progress=False)
-        if len(df) < 30:
-            return f"⚠️ {symbol} için yeterli veri yok."
-        
-        df['SMA20'] = df['Close'].rolling(window=20).mean()
-        df['Avg_Vol'] = df['Volume'].rolling(window=10).mean()
+        if df is None or len(df) < 50:
+            return f"📊 *Backtest Raporu ({symbol})*\n• Yetersiz veri."
+
+        # Pandas DataFrame çoklu kolon yapısını düzeltme koruması
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+
+        df['Vol_Std'] = df['Volume'].rolling(window=10).std()
+        df['Vol_Mean'] = df['Volume'].rolling(window=10).mean()
         
         total_trades = 0
         successful_trades = 0
-        
-        for i in range(20, len(df) - 5):
-            current_vol = df['Volume'].iloc[i]
-            avg_vol = df['Avg_Vol'].iloc[i-1]
-            close = df['Close'].iloc[i]
-            sma = df['SMA20'].iloc[i]
+
+        for i in range(20, len(df)):
+            vol_mean_val = float(df['Vol_Mean'].iloc[i])
+            vol_std_val = float(df['Vol_Std'].iloc[i])
+            current_vol = float(df['Volume'].iloc[i])
             
-            # Hacim Filtresi ve Trend Şartı
-            if current_vol >= (avg_vol * 1.2) and close > sma:
+            if pd.isna(vol_mean_val) or pd.isna(vol_std_val):
+                continue
+
+            dynamic_threshold = vol_mean_val + (0.5 * vol_std_val)
+            
+            if current_vol < dynamic_threshold:
+                continue 
+
+            close_val = float(df['Close'].iloc[i])
+            sma_val = float(df['Close'].rolling(window=20).mean().iloc[i])
+
+            if close_val > sma_val:
                 total_trades += 1
-                entry_price = df['Close'].iloc[i]
-                target_price = entry_price * 1.05  # %5 Hedef (TP1)
-                stop_price = entry_price * 0.97    # %3 Stop Loss
+                entry_price = close_val
+                tp_price = entry_price * 1.05
+                sl_price = entry_price * 0.97
                 
-                # 5 günlük süre içinde hedef mi geldi, stop mu oldu?
-                for j in range(1, 6):
-                    if i + j < len(df):
-                        high = df['High'].iloc[i+j]
-                        low = df['Low'].iloc[i+j]
-                        if high >= target_price:
-                            successful_trades += 1
-                            break
-                        elif low <= stop_price:
-                            break
-                            
-        win_rate = (successful_trades / total_trades * 100) if total_trades > 0 else 0
-        
+                # Gelecek günlerde hedef veya stop oldu mu kontrol et
+                trade_success = False
+                for j in range(i + 1, min(i + 10, len(df))):
+                    high_val = float(df['High'].iloc[j])
+                    low_val = float(df['Low'].iloc[j])
+                    
+                    if high_val >= tp_price:
+                        successful_trades += 1
+                        trade_success = True
+                        break
+                    elif low_val <= sl_price:
+                        break
+
+        win_rate = (successful_trades / total_trades * 100) if total_trades > 0 else 0.0
+
         report = (
-            f"📊 *Backtest Sonucu ({symbol})*\n\n"
-            f"• *Toplam Sinyal:* {total_trades}\n"
-            f"• *Başarılı İşlem (TP):* {successful_trades}\n"
-            f"• *Yeni Kazanma Oranı (Win Rate):* %{win_rate:.2f}\n"
+            f"📊 *Backtest Sonucu ({symbol})*\n"
+            f"• *Toplam Sinyal:* `{total_trades}`\n"
+            f"• *Başarılı İşlem (TP):* `{successful_trades}`\n"
+            f"• *Test Başarı Oranı:* `% {win_rate:.1f}`"
         )
         return report
+
     except Exception as e:
-        return f"Backtest hatası: {e}"
+        return f"⚠️ *Backtest Hatası:* `{str(e)}`"

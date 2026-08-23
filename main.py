@@ -20,21 +20,14 @@ logging.basicConfig(
 
 app = Flask(__name__)
 
-# Konfigürasyonlar (Render Environment Variables üzerinden okunur)
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "YOUR_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "YOUR_CHAT_ID")
-RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL", "") # Render otomatik sağlar
+RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL", "")
 
-# Panik tuşu ve durum bayrağı
 BOT_ACTIVE = True
-
-# Performans Log Dosyası
 PERF_LOG_FILE = "signal_performance.json"
 
 def setup_automatic_webhook():
-    """
-    Render URL'sini kullanarak Telegram webhook'unu otomatik olarak ayarlar.
-    """
     if RENDER_EXTERNAL_URL:
         webhook_url = f"{RENDER_EXTERNAL_URL}/{TELEGRAM_BOT_TOKEN}"
         api_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/setWebhook?url={webhook_url}"
@@ -42,8 +35,6 @@ def setup_automatic_webhook():
             response = requests.get(api_url, timeout=10)
             if response.status_code == 200:
                 logging.info(f"Otomatik Webhook Başarıyla Kuruldu: {webhook_url}")
-            else:
-                logging.error(f"Webhook kurulamadı: {response.text}")
         except Exception as e:
             logging.error(f"Webhook bağlantı hatası: {e}")
 
@@ -74,22 +65,19 @@ def send_telegram_message(message, reply_markup=None):
     }
     if reply_markup:
         payload["reply_markup"] = reply_markup
-        
     try:
-        response = requests.post(url, json=payload, timeout=10)
-        if response.status_code != 200:
-            logging.error(f"Telegram API Hata Kodu: {response.status_code}, Yanıt: {response.text}")
+        requests.post(url, json=payload, timeout=10)
     except Exception as e:
-        logging.error(f"Telegram mesajı gönderilemedi (Bağlantı Hatası): {e}")
+        logging.error(f"Telegram mesajı gönderilemedi: {e}")
 
 @app.route("/")
 def home():
-    status = "AKTİF 🚀" if BOT_ACTIVE else "DURDURULDU (PANİK MODU) 🛑"
+    status = "AKTİF 🚀" if BOT_ACTIVE else "DURDURULDU 🛑"
     logs = load_performance_logs()
-    total_signals = len(logs)
-    return f"Otonom Al-Sat Botu (Otomatik Webhook Sürüm) Çalışıyor. Durum: {status} | Toplam Sinyal: {total_signals}"
+    active_count = len([l for l in logs if l["status"] in ["AKTİF (ONAYLANDI)", "TP1 ULAŞILDI (%50 KAPATILDI)"]])
+    return f"Otonom Al-Sat Botu (V9.0 İnteraktif Portföy Onaylı) Çalışıyor. Durum: {status} | Aktif Takipteki Pozisyon: {active_count}"
 
-# --- TELEGRAM WEBHOOK (Komut ve Buton Yönetimi) ---
+# --- TELEGRAM WEBHOOK (Buton ve Komut Yönetimi) ---
 @app.route(f"/{TELEGRAM_BOT_TOKEN}", methods=["POST"])
 def telegram_webhook():
     global BOT_ACTIVE
@@ -97,40 +85,53 @@ def telegram_webhook():
     
     if "message" in update:
         text = update["message"].get("text", "")
-        
         if text == "/stats":
             logs = load_performance_logs()
-            completed = [l for l in logs if l["status"] != "AKTİF"]
-            wins = [l for l in completed if "BAŞARILI" in l["status"]]
+            completed = [l for l in logs if "NİHAİ" in l["status"] or "ZARAR" in l["status"]]
+            wins = [l for l in completed if "NİHAİ" in l["status"]]
             win_rate = (len(wins) / len(completed) * 100) if completed else 0.0
-            
-            stats_msg = (
-                f"📊 *Bot Başarı İstatistikleri*\n\n"
-                f"• *Toplam Sinyal:* `{len(logs)}`\n"
-                f"• *Sonuçlanan:* `{len(completed)}`\n"
-                f"• *Başarı Oranı:* `% {win_rate:.1f}`"
-            )
-            send_telegram_message(stats_msg)
-            
+            send_telegram_message(f"📊 *Portföy Başarı İstatistikleri*\n• Takip Edilen Toplam Sinyal: `{len(logs)}`\n• Sonuçlanan: `{len(completed)}`\n• Başarı Oranı: `% {win_rate:.1f}`")
         elif text == "/reset":
             if os.path.exists(PERF_LOG_FILE):
                 os.remove(PERF_LOG_FILE)
-            send_telegram_message("🗑️ *Performans logları sıfırlandı.*")
-            
+            send_telegram_message("🗑️ *Portföy logları sıfırlandı.*")
         elif text == "/panic":
             BOT_ACTIVE = False
-            send_telegram_message("🛑 *PANİK MODU AKTİFLEŞTİRİLDİ!* Tüm taramalar durduruldu.")
-            
+            send_telegram_message("🛑 *PANİK MODU AKTİF!*")
         elif text == "/resume":
             BOT_ACTIVE = True
-            send_telegram_message("🚀 *Sistem Yeniden Aktif!* Taramalar devam ediyor.")
+            send_telegram_message("🚀 *Sistem Yeniden Aktif!*")
             
     elif "callback_query" in update:
         callback = update["callback_query"]
         data = callback["data"]
-        if data == "btn_status":
-            send_telegram_message(f"🟢 Bot Durumu: Aktif\nSermaye: $100.00")
+        chat_id = callback["message"]["chat"]["id"]
+        message_id = callback["message"]["message_id"]
+        
+        # Buton aksiyonlarını yönet
+        if data.startswith("buy_"):
+            symbol = data.split("_")[1]
+            # Loglarda ilgili sembolü "BEKLEMEDE"den "AKTİF (ONAYLANDI)" durumuna geçir
+            logs = load_performance_logs()
+            updated = False
+            for log in logs:
+                if log["symbol"] == symbol and log["status"] == "BEKLEMEDE (ONAY BEKLİYOR)":
+                    log["status"] = "AKTİF (ONAYLANDI)"
+                    updated = True
+                    break
+            if updated:
+                save_performance_logs(logs)
+                send_telegram_message(f"✅ *{symbol} için alım onaylandı!* Portföy takibi ve Trailing Stop mekanizması başlatıldı.")
             
+        elif data.startswith("ignore_"):
+            symbol = data.split("_")[1]
+            logs = load_performance_logs()
+            logs = [l for l in not_matched if l["symbol"] != symbol or l["status"] != "BEKLEMEDE (ONAY BEKLİYOR)"]
+            # Alternatif filtreleme:
+            logs = [l for l in logs if not (l["symbol"] == symbol and l["status"] == "BEKLEMEDE (ONAY BEKLİYOR)")]
+            save_performance_logs(logs)
+            send_telegram_message(f"❌ *{symbol} sinyali reddedildi.* Takibe alınmadı.")
+
     return {"status": "ok"}
 
 def get_custom_megatrend_watchlist():
@@ -157,58 +158,71 @@ def evaluate_open_signals():
         return
     updated = False
     for log in logs:
-        if log["status"] == "AKTİF":
+        status = log["status"]
+        # Sadece kullanıcı tarafından "Aldım" onay verilmiş pozisyonları takip et!
+        if status in ["AKTİF (ONAYLANDI)", "TP1 ULAŞILDI (%50 KAPATILDI)"]:
             symbol = log["symbol"]
-            entry_price = log["entry_price"]
-            tp_price = log["tp_price"]
-            sl_price = log["sl_price"]
+            entry = log["entry_price"]
+            tp1 = log["tp1_price"]
+            tp2 = log["tp2_price"]
+            sl = log["sl_price"]
+            
             try:
                 df = yf.download(symbol, period="5d", interval="1d", progress=False)
                 if df is None or df.empty:
                     continue
-                current_high = float(df['High'].iloc[-1])
-                current_low = float(df['Low'].iloc[-1])
+                high = float(df['High'].iloc[-1])
+                low = float(df['Low'].iloc[-1])
                 
-                if current_high >= tp_price:
-                    log["status"] = "HEDEF BAŞARILI (TP) 🎯"
-                    log["exit_price"] = tp_price
-                    log["result_pnl_pct"] = ((tp_price - entry_price) / entry_price) * 100
+                if status == "AKTİF (ONAYLANDI)" and high >= tp1:
+                    log["status"] = "TP1 ULAŞILDI (%50 KAPATILDI)"
+                    log["sl_price"] = entry  # Trailing stop: Giriş fiyatına sabitlendi
                     updated = True
-                    send_telegram_message(f"🎯 *HEDEF BAŞARIYLA ULAŞILDI (TP)*\n• Sembol: `{symbol}`\n• Kâr Oranı: `+%{log['result_pnl_pct']:.2f}`")
-                elif current_low <= sl_price:
+                    send_telegram_message(
+                        f"🎯 *[PORTFÖY] KADEMELİ HEDEF 1 (TP1) ULAŞILDI!*\n"
+                        f"• Sembol: `{symbol}`\n"
+                        f"• Aksiyon: Pozisyonun **%50'sini sat**.\n"
+                        f"• Trailing Güncellemesi: Kalan pozisyon için SL **giriş fiyatına (`{entry:.2f}`)** çekildi (Sıfır Risk!)."
+                    )
+                elif high >= tp2:
+                    log["status"] = "NİHAİ HEDEF BAŞARILI (TP2) 🎯"
+                    log["result_pnl_pct"] = ((tp2 - entry) / entry) * 100
+                    updated = True
+                    send_telegram_message(
+                        f"🚀 *[PORTFÖY] NİHAİ HEDEF (TP2) TAMAMLANDI! (TÜMÜ KAPANDI)*\n"
+                        f"• Sembol: `{symbol}`\n"
+                        f"• Toplam Kâr Oranı: `+%{log['result_pnl_pct']:.2f}`"
+                    )
+                elif low <= sl:
                     log["status"] = "ZARAR DURDUR (SL) 🛑"
-                    log["exit_price"] = sl_price
-                    log["result_pnl_pct"] = ((sl_price - entry_price) / entry_price) * 100
+                    log["result_pnl_pct"] = ((sl - entry) / entry) * 100
                     updated = True
-                    send_telegram_message(f"🛑 *ZARAR DURDUR ÇALIŞTI (SL)*\n• Sembol: `{symbol}`\n• Değişim: `%{log['result_pnl_pct']:.2f}`")
+                    send_telegram_message(
+                        f"🛑 *[PORTFÖY] ZARAR DURDUR (SL) ÇALIŞTI*\n"
+                        f"• Sembol: `{symbol}`\n"
+                        f"• Seviye: `{sl:.2f}`"
+                    )
             except Exception as e:
-                logging.error(f"{symbol} performans kontrol hatası: {e}")
+                logging.error(f"{symbol} takip hatası: {e}")
+                
     if updated:
         save_performance_logs(logs)
 
 def run_strategy_check():
     if not BOT_ACTIVE:
-        logging.warning("Bot pasif durumda. Tarama atlandı.")
         return
-    
-    logging.info("Strateji taraması başlatıldı...")
+    logging.info("İnteraktif strateji taraması başlatıldı...")
     try:
         evaluate_open_signals()
         
         try:
             flow_report = analyze_market_flow()
             send_telegram_message(flow_report)
-        except Exception as e:
-            logging.error(f"Para akışı hatası: {e}")
-            
-        try:
-            backtest_report = run_historical_backtest("NVDA")
-            send_telegram_message(backtest_report)
-        except Exception as e:
-            logging.error(f"Backtest hatası: {e}")
+        except Exception:
+            pass
             
         watchlist = get_custom_megatrend_watchlist()
-        send_telegram_message(f"🔄 *Tarama Başlıyor:* Toplam `{len(watchlist)}` varlık inceleniyor...")
+        send_telegram_message(f"🔄 *Tarama Başlıyor:* `{len(watchlist)}` varlık inceleniyor...")
         
         current_logs = load_performance_logs()
         
@@ -237,56 +251,61 @@ def run_strategy_check():
                 
                 if close > sma_20:
                     sl_price = close - (1.5 * current_atr)
-                    tp_price = close + (2.5 * current_atr)
+                    tp1_price = close + (1.5 * current_atr)
+                    tp2_price = close + (3.0 * current_atr)
                     
                     sl_pct = ((close - sl_price) / close) * 100
-                    tp_pct = ((tp_price - close) / close) * 100
+                    tp1_pct = ((tp1_price - close) / close) * 100
+                    tp2_pct = ((tp2_price - close) / close) * 100
                     
+                    # Henüz onaylanmadı, beklemede ekle
                     current_logs.append({
                         "symbol": symbol,
                         "entry_price": close,
-                        "tp_price": tp_price,
+                        "tp1_price": tp1_price,
+                        "tp2_price": tp2_price,
                         "sl_price": sl_price,
-                        "status": "AKTİF",
+                        "status": "BEKLEMEDE (ONAY BEKLİYOR)",
                         "timestamp": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M")
                     })
                     
+                    # İnteraktif Butonlar
                     keyboard = {
                         "inline_keyboard": [
-                            [{"text": "📊 Bot Durumunu Gör", "callback_data": "btn_status"}]
+                            [
+                                {"text": "✅ Aldım (Takibi Başlat)", "callback_data": f"buy_{symbol}"},
+                                {"text": "❌ Almadım (Pas Geç)", "callback_data": f"ignore_{symbol}"}
+                            ]
                         ]
                     }
                     
                     signal_msg = (
-                        f"🚨 *ALIM SİNYALİ* 🚨\n\n"
+                        f"🚨 *YENİ ALIM SİNYALİ (ONAY BEKLİYOR)* 🚨\n\n"
                         f"📌 *Sembol:* `{symbol}`\n"
                         f"💵 *Giriş Fiyatı:* `{close:.2f}`\n\n"
-                        f"🎯 *Hedefler (ATR Bazlı):*\n"
-                        f"• *TP (+%{tp_pct:.1f}):* `{tp_price:.2f}`\n"
-                        f"• *SL (-%{sl_pct:.1f}):* `{sl_price:.2f}`"
+                        f"🎯 *Hedefler:*\n"
+                        f"• *TP1 (%{tp1_pct:.1f}):* `{tp1_price:.2f}`\n"
+                        f"• *TP2 (%{tp2_pct:.1f}):* `{tp2_price:.2f}`\n"
+                        f"• *SL (-%{sl_pct:.1f}):* `{sl_price:.2f}`\n\n"
+                        f"👇 *Bu hisseyi aldın mı? Takibi başlatmak için seç:*"
                     )
                     send_telegram_message(signal_msg, reply_markup=keyboard)
                     
             except Exception as inner_e:
-                logging.error(f"{symbol} taranırken hata: {inner_e}")
+                logging.error(f"{symbol} hata: {inner_e}")
                 continue
                 
         save_performance_logs(current_logs)
-        logging.info("Tarama döngüsü başarıyla tamamlandı.")
-        
+        logging.info("Tarama tamamlandı.")
     except Exception as e:
-        error_msg = f"⚠️ *Kritik Hata:* `{str(e)}`"
-        send_telegram_message(error_msg)
         logging.critical(f"Kritik Hata: {e}")
 
-# --- APSCHEDULER ZAMANLAYICI AYARLARI ---
 scheduler = BackgroundScheduler()
 scheduler.add_job(run_strategy_check, 'cron', hour=10, minute=0)
 scheduler.add_job(run_strategy_check, 'cron', hour=14, minute=0)
 scheduler.add_job(run_strategy_check, 'cron', hour=18, minute=0)
 scheduler.start()
 
-# Bot başlar başlamaz webhook'u otomatik kur
 setup_automatic_webhook()
 
 if __name__ == "__main__":

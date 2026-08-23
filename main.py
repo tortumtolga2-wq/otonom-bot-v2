@@ -45,7 +45,7 @@ def send_telegram_message(message):
 @app.route("/")
 def home():
     status = "AKTİF 🚀" if BOT_ACTIVE else "DURDURULDU (PANİK MODU) 🛑"
-    return f"Otonom Al-Sat Botu (V6.2 Güçlendirilmiş Hata Yönetimi) Çalışıyor. Durum: {status}"
+    return f"Otonom Al-Sat Botu (V6.3 Dinamik ATR Risk Yönetimi) Çalışıyor. Durum: {status}"
 
 def get_custom_megatrend_watchlist():
     """
@@ -58,12 +58,28 @@ def get_custom_megatrend_watchlist():
         "THYAO.IS", "EREGL.IS", "ASELS.IS", "GARAN.IS", "AKBNK.IS"
     ]
 
+def calculate_atr(df, period=14):
+    """
+    Varlığın o anki oynaklığını ölçmek için ATR (Average True Range) hesaplar.
+    """
+    high = df['High']
+    low = df['Low']
+    close = df['Close']
+    
+    tr1 = high - low
+    tr2 = (high - close.shift()).abs()
+    tr3 = (low - close.shift()).abs()
+    
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.rolling(window=period).mean()
+    return atr
+
 def run_strategy_check():
     if not BOT_ACTIVE:
         logging.warning("Bot pasif durumda (Panik Modu aktif). Tarama atlandı.")
         return
     
-    logging.info("Otonom strateji taraması başlatıldı...")
+    logging.info("Dinamik ATR risk yönetimli strateji taraması başlatıldı...")
     
     try:
         # 1. Küresel Para Akışı & Sektör Dağılımı Raporu
@@ -82,14 +98,14 @@ def run_strategy_check():
         
         # 3. Varlık Listesini Al ve Tara
         watchlist = get_custom_megatrend_watchlist()
-        send_telegram_message(f"🔄 *Gelişmiş Tarama Başlıyor:* Toplam `{len(watchlist)}` varlık inceleniyor...")
+        send_telegram_message(f"🔄 *Dinamik Risk Taraması Başlıyor:* Toplam `{len(watchlist)}` varlık inceleniyor...")
         
         for symbol in watchlist:
             try:
                 time.sleep(1)  # API hız sınırı koruması
                 
-                df = yf.download(symbol, period="1mo", interval="1d", progress=False)
-                if df is None or len(df) < 20:
+                df = yf.download(symbol, period="2mo", interval="1d", progress=False)
+                if df is None or len(df) < 25:
                     logging.warning(f"{symbol} için yeterli veri alınamadı.")
                     continue
                 
@@ -106,26 +122,38 @@ def run_strategy_check():
                 if current_vol < dynamic_threshold:
                     continue 
                 
-                # --- TEKNİK ŞARTLAR & TP/SL HESAPLAMA ---
+                # --- TEKNİK ŞARTLAR & DİNAMİK ATR (TP/SL) HESAPLAMA ---
                 close = float(df['Close'].iloc[-1])
                 sma_20 = float(df['Close'].rolling(window=20).mean().iloc[-1])
                 
+                # ATR Hesaplama
+                df['ATR'] = calculate_atr(df)
+                current_atr = float(df['ATR'].iloc[-1])
+                
+                if pd.isna(current_atr) or current_atr <= 0:
+                    current_atr = close * 0.03  # Güvenli yedek oran (%3)
+                
                 if close > sma_20:
-                    tp_price = close * 1.05
-                    sl_price = close * 0.97
+                    # Dinamik Hedefler: Stop-Loss = 1.5 * ATR, Kar Al (TP) = 2.5 * ATR mesafesi
+                    sl_price = close - (1.5 * current_atr)
+                    tp_price = close + (2.5 * current_atr)
+                    
+                    # Yüzdesel karşılıkları bilgi amaçlı hesaplayalım
+                    sl_pct = ((close - sl_price) / close) * 100
+                    tp_pct = ((tp_price - close) / close) * 100
                     
                     signal_msg = (
-                        f"🚨 *PROFESYONEL ALIM SİNYALİ* 🚨\n\n"
+                        f"🚨 *DİNAMİK RİSKLİ ALIM SİNYALİ* 🚨\n\n"
                         f"📌 *Sembol:* `{symbol}`\n"
                         f"💵 *Güncel / Giriş Fiyatı:* `{close:.2f}`\n"
-                        f"📊 *Hacim Durumu:* Dinamik Eşik Aşıldı (Akıllı Filtre Onaylı ✅)\n\n"
-                        f"🎯 *Risk & Hedef Seviyeleri:*\n"
-                        f"• *Hedef Kar (TP1 - %5):* `{tp_price:.2f}` *(Yarısını burada sat)*\n"
-                        f"• *Zarar Durdur (Stop-Loss - %3):* `{sl_price:.2f}` *(Kritik sınır)*\n\n"
-                        f"💰 *Strateji:* 100$ bütçenin %30-%50'si ile kademeli giriş. Hedefe ulaşınca kalanı maliyete çek (Trailing Stop)!"
+                        f"📊 *Hacim & Volatilite:* Akıllı Eşik Aşıldı (ATR Onaylı ✅)\n\n"
+                        f"🎯 *Dinamik Risk & Hedef Seviyeleri:*\n"
+                        f"• *Hedef Kar (TP - %{tp_pct:.1f}):* `{tp_price:.2f}`\n"
+                        f"• *Zarar Durdur (SL - %{sl_pct:.1f}):* `{sl_price:.2f}`\n\n"
+                        f"💰 *Strateji:* Volatiliteye göre optimize edilmiş kademeli giriş!"
                     )
                     send_telegram_message(signal_msg)
-                    logging.info(f"SİNYAL ÜRETİLDİ: {symbol} - Fiyat: {close}")
+                    logging.info(f"DİNAMİK SİNYAL ÜRETİLDİ: {symbol} - Fiyat: {close}, ATR: {current_atr:.2f}")
                     
             except Exception as inner_e:
                 logging.error(f"{symbol} taranırken işlem hatası oluştu: {inner_e}")
@@ -135,10 +163,10 @@ def run_strategy_check():
         pnl_report = (
             "📈 *Otonom Portföy & PnL Özeti*\n\n"
             "• *Toplam Sermaye:* $100.00\n"
-            "• *Sistem Durumu:* Hata Korumalı Gelişmiş Tarama Tamamlandı 🟢"
+            "• *Sistem Durumu:* Dinamik ATR Risk Yönetimi Aktif 🟢"
         )
         send_telegram_message(pnl_report)
-        logging.info("Strateji tarama döngüsü başarıyla tamamlandı.")
+        logging.info("Dinamik strateji tarama döngüsü başarıyla tamamlandı.")
         
     except Exception as e:
         error_msg = f"⚠️ *Sistem Kritik Hata Uyarısı:* Tarama döngüsünde istisna oluştu: `{str(e)}`"

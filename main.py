@@ -6,6 +6,7 @@ import pandas as pd
 import yfinance as yf
 from flask import Flask
 from market_flow import analyze_market_flow
+from apscheduler.schedulers.background import BackgroundScheduler
 
 app = Flask(__name__)
 
@@ -33,20 +34,17 @@ def send_telegram_message(message):
 @app.route("/")
 def home():
     status = "AKTİF 🚀" if BOT_ACTIVE else "DURDURULDU (PANİK MODU) 🛑"
-    return f"Otonom Al-Sat Botu Çalışıyor. Durum: {status}"
-
-@app.route("/webhook/telegram", methods=["POST"])
-def telegram_webhook():
-    global BOT_ACTIVE
-    # Örnek: Telegram'dan gelen komutları dinleme (Örn: /stop_all veya /resume)
-    # Gerçek kullanımda Telegram update JSON yapısı parse edilir.
-    return "OK", 200
+    return f"Otonom Al-Sat Botu ve Zamanlayıcı Çalışıyor. Durum: {status}"
 
 def run_strategy_check():
     if not BOT_ACTIVE:
         return
     
-    # Örnek Tarama Listesi (ABD Fractional & BIST)
+    # Küresel Para Akışı Raporunu Gönder
+    flow_report = analyze_market_flow()
+    send_telegram_message(flow_report)
+    
+    # Örnek Tarama Listesi (ABD & BIST)
     watchlist = ["AAPL", "MSFT", "THYAO.IS", "GARAN.IS"]
     
     for symbol in watchlist:
@@ -59,15 +57,13 @@ def run_strategy_check():
             avg_vol = df['Volume'].iloc[-10:-1].mean()
             current_vol = df['Volume'].iloc[-1]
             if current_vol < (avg_vol * 1.2):
-                # Hacim ortalamanın altında ise sahte sinyal ihtimaline karşı ele!
                 continue
             
-            # --- 2. TEKNİK ŞARTLAR (Örn: Basit RSI / SMA Kesişimi) ---
+            # --- 2. TEKNİK ŞARTLAR ---
             close = df['Close'].iloc[-1]
             sma_20 = df['Close'].rolling(window=20).mean().iloc[-1]
             
             if close > sma_20:
-                # Sermaye Yönetimi: 100 doların %30-%50'lik dilimi ile işlem önerisi
                 signal_msg = (
                     f"🚨 *ALIM SİNYALİ TESPİT EDİLDİ* 🚨\n\n"
                     f"📌 *Sembol:* `{symbol}`\n"
@@ -80,22 +76,23 @@ def run_strategy_check():
                 
         except Exception as e:
             print(f"{symbol} taranırken hata oluştu: {e}")
-
-@app.route("/run-daily-tasks")
-def run_daily_tasks():
-    # Küresel Para Akışı Raporunu Gönder
-    flow_report = analyze_market_flow()
-    send_telegram_message(flow_report)
-    
-    # Günlük PnL Raporu Simülasyonu
+            
+    # Günlük PnL ve Durum Özeti
     pnl_report = (
-        "📈 *Günlük Portföy & PnL Özeti*\n\n"
+        "📈 *Periyodik Portföy & PnL Özeti*\n\n"
         "• *Toplam Sermaye:* $100.00 (Başlangıç)\n"
         "• *Açık Pozisyonlar:* Kademeli takipte\n"
-        "• *Durum:* Sistem sağlıklı çalışıyor, risk yönetimi aktif."
+        "• *Durum:* Zamanlanmış tarama başarıyla tamamlandı."
     )
     send_telegram_message(pnl_report)
-    return "Daily tasks executed", 200
+
+# --- APSCHEDULER ZAMANLAYICI AYARLARI ---
+scheduler = BackgroundScheduler()
+# Örnek Periyotlar: Her gün saat 10:00 (Açılış), 14:00 (Gün Ortası) ve 18:00 (Kapanış)
+scheduler.add_job(run_strategy_check, 'cron', hour=10, minute=0)
+scheduler.add_job(run_strategy_check, 'cron', hour=14, minute=0)
+scheduler.add_job(run_strategy_check, 'cron', hour=18, minute=0)
+scheduler.start()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))

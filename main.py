@@ -6,6 +6,7 @@ import pandas as pd
 import yfinance as yf
 from flask import Flask
 from market_flow import analyze_market_flow
+from backtest import run_historical_backtest
 from apscheduler.schedulers.background import BackgroundScheduler
 
 app = Flask(__name__)
@@ -40,9 +41,13 @@ def run_strategy_check():
     if not BOT_ACTIVE:
         return
     
-    # Küresel Para Akışı Raporunu Gönder
+    # 1. Küresel Para Akışı Raporunu Gönder
     flow_report = analyze_market_flow()
     send_telegram_message(flow_report)
+    
+    # 2. Backtest Performans Sonucunu Gönder (Win Rate Kontrolü)
+    backtest_report = run_historical_backtest("AAPL")
+    send_telegram_message(backtest_report)
     
     # Örnek Tarama Listesi (ABD & BIST)
     watchlist = ["AAPL", "MSFT", "THYAO.IS", "GARAN.IS"]
@@ -53,13 +58,13 @@ def run_strategy_check():
             if len(df) < 15:
                 continue
             
-            # --- 1. HACİM FİLTRESİ (Volume Spike) ---
+            # --- HACİM FİLTRESİ (Volume Spike) ---
             avg_vol = df['Volume'].iloc[-10:-1].mean()
             current_vol = df['Volume'].iloc[-1]
             if current_vol < (avg_vol * 1.2):
                 continue
             
-            # --- 2. TEKNİK ŞARTLAR ---
+            # --- TEKNİK ŞARTLAR ---
             close = df['Close'].iloc[-1]
             sma_20 = df['Close'].rolling(window=20).mean().iloc[-1]
             
@@ -82,13 +87,13 @@ def run_strategy_check():
         "📈 *Periyodik Portföy & PnL Özeti*\n\n"
         "• *Toplam Sermaye:* $100.00 (Başlangıç)\n"
         "• *Açık Pozisyonlar:* Kademeli takipte\n"
-        "• *Durum:* Zamanlanmış tarama başarıyla tamamlandı."
+        "• *Durum:* Zamanlanmış tarama ve backtest başarıyla tamamlandı."
     )
     send_telegram_message(pnl_report)
 
 # --- APSCHEDULER ZAMANLAYICI AYARLARI ---
 scheduler = BackgroundScheduler()
-# Örnek Periyotlar: Her gün saat 10:00 (Açılış), 14:00 (Gün Ortası) ve 18:00 (Kapanış)
+# Her gün saat 10:00 (Açılış), 14:00 (Gün Ortası) ve 18:00 (Kapanış)
 scheduler.add_job(run_strategy_check, 'cron', hour=10, minute=0)
 scheduler.add_job(run_strategy_check, 'cron', hour=14, minute=0)
 scheduler.add_job(run_strategy_check, 'cron', hour=18, minute=0)

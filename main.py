@@ -23,12 +23,29 @@ app = Flask(__name__)
 # Konfigürasyonlar (Render Environment Variables üzerinden okunur)
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "YOUR_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "YOUR_CHAT_ID")
+RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL", "") # Render otomatik sağlar
 
 # Panik tuşu ve durum bayrağı
 BOT_ACTIVE = True
 
 # Performans Log Dosyası
 PERF_LOG_FILE = "signal_performance.json"
+
+def setup_automatic_webhook():
+    """
+    Render URL'sini kullanarak Telegram webhook'unu otomatik olarak ayarlar.
+    """
+    if RENDER_EXTERNAL_URL:
+        webhook_url = f"{RENDER_EXTERNAL_URL}/{TELEGRAM_BOT_TOKEN}"
+        api_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/setWebhook?url={webhook_url}"
+        try:
+            response = requests.get(api_url, timeout=10)
+            if response.status_code == 200:
+                logging.info(f"Otomatik Webhook Başarıyla Kuruldu: {webhook_url}")
+            else:
+                logging.error(f"Webhook kurulamadı: {response.text}")
+        except Exception as e:
+            logging.error(f"Webhook bağlantı hatası: {e}")
 
 def load_performance_logs():
     if os.path.exists(PERF_LOG_FILE):
@@ -70,7 +87,7 @@ def home():
     status = "AKTİF 🚀" if BOT_ACTIVE else "DURDURULDU (PANİK MODU) 🛑"
     logs = load_performance_logs()
     total_signals = len(logs)
-    return f"Otonom Al-Sat Botu (V7.0 Tam Entegre Sürüm) Çalışıyor. Durum: {status} | Toplam Sinyal: {total_signals}"
+    return f"Otonom Al-Sat Botu (Otomatik Webhook Sürüm) Çalışıyor. Durum: {status} | Toplam Sinyal: {total_signals}"
 
 # --- TELEGRAM WEBHOOK (Komut ve Buton Yönetimi) ---
 @app.route(f"/{TELEGRAM_BOT_TOKEN}", methods=["POST"])
@@ -79,7 +96,6 @@ def telegram_webhook():
     update = request.get_json()
     
     if "message" in update:
-        chat_id = update["message"]["chat"]["id"]
         text = update["message"].get("text", "")
         
         if text == "/stats":
@@ -112,7 +128,6 @@ def telegram_webhook():
     elif "callback_query" in update:
         callback = update["callback_query"]
         data = callback["data"]
-        # İnteraktif buton yanıtları
         if data == "btn_status":
             send_telegram_message(f"🟢 Bot Durumu: Aktif\nSermaye: $100.00")
             
@@ -176,7 +191,7 @@ def run_strategy_check():
         logging.warning("Bot pasif durumda. Tarama atlandı.")
         return
     
-    logging.info("Tam entegre strateji taraması başlatıldı...")
+    logging.info("Strateji taraması başlatıldı...")
     try:
         evaluate_open_signals()
         
@@ -193,7 +208,7 @@ def run_strategy_check():
             logging.error(f"Backtest hatası: {e}")
             
         watchlist = get_custom_megatrend_watchlist()
-        send_telegram_message(f"🔄 *Tam Donanımlı Tarama Başlıyor:* Toplam `{len(watchlist)}` varlık inceleniyor...")
+        send_telegram_message(f"🔄 *Tarama Başlıyor:* Toplam `{len(watchlist)}` varlık inceleniyor...")
         
         current_logs = load_performance_logs()
         
@@ -236,7 +251,6 @@ def run_strategy_check():
                         "timestamp": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M")
                     })
                     
-                    # İnteraktif Buton Tanımı
                     keyboard = {
                         "inline_keyboard": [
                             [{"text": "📊 Bot Durumunu Gör", "callback_data": "btn_status"}]
@@ -244,7 +258,7 @@ def run_strategy_check():
                     }
                     
                     signal_msg = (
-                        f"🚨 *İNTERAKTİF ALIM SİNYALİ* 🚨\n\n"
+                        f"🚨 *ALIM SİNYALİ* 🚨\n\n"
                         f"📌 *Sembol:* `{symbol}`\n"
                         f"💵 *Giriş Fiyatı:* `{close:.2f}`\n\n"
                         f"🎯 *Hedefler (ATR Bazlı):*\n"
@@ -271,6 +285,9 @@ scheduler.add_job(run_strategy_check, 'cron', hour=10, minute=0)
 scheduler.add_job(run_strategy_check, 'cron', hour=14, minute=0)
 scheduler.add_job(run_strategy_check, 'cron', hour=18, minute=0)
 scheduler.start()
+
+# Bot başlar başlamaz webhook'u otomatik kur
+setup_automatic_webhook()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))

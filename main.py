@@ -35,21 +35,18 @@ def send_telegram_message(message):
 @app.route("/")
 def home():
     status = "AKTİF 🚀" if BOT_ACTIVE else "DURDURULDU (PANİK MODU) 🛑"
-    return f"Otonom Al-Sat Botu (V6.0 Özel Megatrend Sürüm) Çalışıyor. Durum: {status}"
+    return f"Otonom Al-Sat Botu (V6.1 Optimize Edilmiş Sürüm) Çalışıyor. Durum: {status}"
 
 def get_custom_megatrend_watchlist():
     """
-    Senin Tarafından Oluşturulan Özel Megatrend ve BİST Mavi Yakalı Havuzu
+    Özel Megatrend ve BİST Mavi Yakalı Havuzu (21 Varlık)
     """
-    watchlist = [
-        # Senin Görsellerdeki Özel Varlıkların (Nükleer, eVTOL, Maden, Teknoloji)
+    return [
         "OKLO", "GEV", "VST", "JOBY", "ACHR", "MP", 
         "NVDA", "AMZN", "GOOGL", "NU", "SYM", 
         "REXC", "NB", "AEM", "GBUG", "GLTR",
-        # Sağlam BİST Çekirdeği
         "THYAO.IS", "EREGL.IS", "ASELS.IS", "GARAN.IS", "AKBNK.IS"
     ]
-    return watchlist
 
 def run_strategy_check():
     if not BOT_ACTIVE:
@@ -60,16 +57,19 @@ def run_strategy_check():
         flow_report = analyze_market_flow()
         send_telegram_message(flow_report)
         
-        # 2. Backtest Performans Raporu (Win Rate Kontrolü)
+        # 2. Backtest Performans Raporu
         backtest_report = run_historical_backtest("NVDA")
         send_telegram_message(backtest_report)
         
-        # 3. Özel Megatrend Varlık Listesini Al
+        # 3. Varlık Listesini Al
         watchlist = get_custom_megatrend_watchlist()
-        send_telegram_message(f"🔄 *Özel Megatrend Havuzu Aktif ({len(watchlist)} Varlık):*\n`{', '.join(watchlist[:10])}...`")
+        send_telegram_message(f"🔄 *Optimize Tarama Başlıyor:* Toplam `{len(watchlist)}` varlık taranıyor...")
         
         for symbol in watchlist:
             try:
+                # API sınırlarına takılmamak için her istek arasında mini bekleme
+                time.sleep(1)
+                
                 df = yf.download(symbol, period="1mo", interval="1d", progress=False)
                 if len(df) < 20:
                     continue
@@ -88,7 +88,6 @@ def run_strategy_check():
                 sma_20 = float(df['Close'].rolling(window=20).mean().iloc[-1])
                 
                 if close > sma_20:
-                    # Nokta Atışı Risk & Hedef Seviyeleri (%5 TP / %3 SL)
                     tp_price = close * 1.05
                     sl_price = close * 0.97
                     
@@ -105,13 +104,14 @@ def run_strategy_check():
                     send_telegram_message(signal_msg)
                     
             except Exception as e:
-                print(f"{symbol} taranırken veri hatası: {e}")
+                print(f"{symbol} taranırken veri hatası atlandı: {e}")
+                continue
                 
         # Günlük PnL Özeti
         pnl_report = (
             "📈 *Otonom Portföy & PnL Özeti*\n\n"
             "• *Toplam Sermaye:* $100.00\n"
-            "• *Sistem Durumu:* Özel Megatrend Sepeti Aktif 🟢"
+            "• *Sistem Durumu:* Optimize Edilmiş Tarama Tamamlandı 🟢"
         )
         send_telegram_message(pnl_report)
         

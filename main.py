@@ -1,6 +1,7 @@
 # main.py
 import os
 import time
+import logging
 import requests
 import pandas as pd
 import yfinance as yf
@@ -8,6 +9,13 @@ from flask import Flask
 from market_flow import analyze_market_flow
 from backtest import run_historical_backtest
 from apscheduler.schedulers.background import BackgroundScheduler
+
+# --- LOGLAMA YAPILANDIRMASI ---
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[logging.StreamHandler()]
+)
 
 app = Flask(__name__)
 
@@ -28,14 +36,16 @@ def send_telegram_message(message):
         "parse_mode": "Markdown"
     }
     try:
-        requests.post(url, json=payload)
+        response = requests.post(url, json=payload, timeout=10)
+        if response.status_code != 200:
+            logging.error(f"Telegram API Hata Kodu: {response.status_code}, Yanıt: {response.text}")
     except Exception as e:
-        print(f"Telegram mesajı gönderilemedi: {e}")
+        logging.error(f"Telegram mesajı gönderilemedi (Bağlantı Hatası): {e}")
 
 @app.route("/")
 def home():
     status = "AKTİF 🚀" if BOT_ACTIVE else "DURDURULDU (PANİK MODU) 🛑"
-    return f"Otonom Al-Sat Botu (V6.1 Optimize Edilmiş Sürüm) Çalışıyor. Durum: {status}"
+    return f"Otonom Al-Sat Botu (V6.2 Güçlendirilmiş Hata Yönetimi) Çalışıyor. Durum: {status}"
 
 def get_custom_megatrend_watchlist():
     """
@@ -50,33 +60,46 @@ def get_custom_megatrend_watchlist():
 
 def run_strategy_check():
     if not BOT_ACTIVE:
+        logging.warning("Bot pasif durumda (Panik Modu aktif). Tarama atlandı.")
         return
+    
+    logging.info("Otonom strateji taraması başlatıldı...")
     
     try:
         # 1. Küresel Para Akışı & Sektör Dağılımı Raporu
-        flow_report = analyze_market_flow()
-        send_telegram_message(flow_report)
+        try:
+            flow_report = analyze_market_flow()
+            send_telegram_message(flow_report)
+        except Exception as e:
+            logging.error(f"Para akışı analizi alınamadı: {e}")
         
         # 2. Backtest Performans Raporu
-        backtest_report = run_historical_backtest("NVDA")
-        send_telegram_message(backtest_report)
+        try:
+            backtest_report = run_historical_backtest("NVDA")
+            send_telegram_message(backtest_report)
+        except Exception as e:
+            logging.error(f"Backtest raporu oluşturulamadı: {e}")
         
-        # 3. Varlık Listesini Al
+        # 3. Varlık Listesini Al ve Tara
         watchlist = get_custom_megatrend_watchlist()
-        send_telegram_message(f"🔄 *Optimize Tarama Başlıyor:* Toplam `{len(watchlist)}` varlık taranıyor...")
+        send_telegram_message(f"🔄 *Gelişmiş Tarama Başlıyor:* Toplam `{len(watchlist)}` varlık inceleniyor...")
         
         for symbol in watchlist:
             try:
-                # API sınırlarına takılmamak için her istek arasında mini bekleme
-                time.sleep(1)
+                time.sleep(1)  # API hız sınırı koruması
                 
                 df = yf.download(symbol, period="1mo", interval="1d", progress=False)
-                if len(df) < 20:
+                if df is None or len(df) < 20:
+                    logging.warning(f"{symbol} için yeterli veri alınamadı.")
                     continue
                 
                 # --- DİNAMİK HACİM FİLTRESİ ---
                 df['Vol_Std'] = df['Volume'].rolling(window=10).std()
                 df['Vol_Mean'] = df['Volume'].rolling(window=10).mean()
+                
+                if df['Vol_Mean'].iloc[-1] == 0 or pd.isna(df['Vol_Mean'].iloc[-1]):
+                    continue
+                    
                 dynamic_threshold = df['Vol_Mean'].iloc[-1] + (0.5 * df['Vol_Std'].iloc[-1])
                 current_vol = df['Volume'].iloc[-1]
                 
@@ -102,22 +125,25 @@ def run_strategy_check():
                         f"💰 *Strateji:* 100$ bütçenin %30-%50'si ile kademeli giriş. Hedefe ulaşınca kalanı maliyete çek (Trailing Stop)!"
                     )
                     send_telegram_message(signal_msg)
+                    logging.info(f"SİNYAL ÜRETİLDİ: {symbol} - Fiyat: {close}")
                     
-            except Exception as e:
-                print(f"{symbol} taranırken veri hatası atlandı: {e}")
+            except Exception as inner_e:
+                logging.error(f"{symbol} taranırken işlem hatası oluştu: {inner_e}")
                 continue
                 
         # Günlük PnL Özeti
         pnl_report = (
             "📈 *Otonom Portföy & PnL Özeti*\n\n"
             "• *Toplam Sermaye:* $100.00\n"
-            "• *Sistem Durumu:* Optimize Edilmiş Tarama Tamamlandı 🟢"
+            "• *Sistem Durumu:* Hata Korumalı Gelişmiş Tarama Tamamlandı 🟢"
         )
         send_telegram_message(pnl_report)
+        logging.info("Strateji tarama döngüsü başarıyla tamamlandı.")
         
     except Exception as e:
-        error_msg = f"⚠️ *Sistem Hata Uyarısı:* Tarama döngüsünde istisna oluştu: `{str(e)}`"
+        error_msg = f"⚠️ *Sistem Kritik Hata Uyarısı:* Tarama döngüsünde istisna oluştu: `{str(e)}`"
         send_telegram_message(error_msg)
+        logging.critical(f"Kritik Tarama Hatası: {e}")
 
 # --- APSCHEDULER ZAMANLAYICI AYARLARI ---
 scheduler = BackgroundScheduler()

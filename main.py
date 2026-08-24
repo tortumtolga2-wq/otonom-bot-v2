@@ -11,11 +11,12 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "MEVCUT_CHAT_ID_BURAYA")
 ALPHA_VANTAGE_KEY = os.environ.get("ALPHA_VANTAGE_KEY", "BURAYA_ALPHA_VANTAGE_KEY")
 FINNHUB_KEY = os.environ.get("FINNHUB_KEY", "BURAYA_FINNHUB_KEY")
 
-def telegram_mesaj_gonder(mesaj: str):
-    """Telegram kanalına mesaj gönderen temel fonksiyon."""
+def telegram_mesaj_gonder(mesaj: str, hedef_id=None):
+    """Telegram üzerinden mesaj gönderen temel fonksiyon."""
+    chat_id = hedef_id if hedef_id else TELEGRAM_CHAT_ID
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
+        "chat_id": chat_id,
         "text": mesaj,
         "parse_mode": "Markdown"
     }
@@ -69,13 +70,10 @@ def guvenli_veri_cek(takip_sozlugu):
             
         if fiyat is not None:
             veriler[isim] = fiyat
-        else:
-            print(f"⚠️ Uyarı: {isim} ({sembol}) için hiçbir veri kaynağından anlık fiyat alınamadı.")
-            
     return veriler
 
 # --- 1. KÜRESEL PİYASA RAPORU ---
-def kuresel_piyasa_tara():
+def kuresel_piyasa_tara(hedef_id=None):
     takip_listesi = {
         "ABD Teknoloji (QQQ)": "QQQ",
         "ABD Geniş Piyasa (SPY)": "SPY",
@@ -86,10 +84,10 @@ def kuresel_piyasa_tara():
         rapor = "🌐 *Küresel Para Akışı & Sektör Raporu*\n"
         for isim, fiyat in sonuclar.items():
             rapor += f"🔹 {isim}: {fiyat:.2f}\n"
-        telegram_mesaj_gonder(rapor)
+        telegram_mesaj_gonder(rapor, hedef_id)
 
 # --- 2. ANA PORTFÖY TARAYICISI ---
-def ana_portfoy_tara():
+def ana_portfoy_tara(hedef_id=None):
     sinyal_aktif = True 
     if sinyal_aktif:
         hisse = "GARAN" 
@@ -100,10 +98,10 @@ def ana_portfoy_tara():
             f"💰 *Fiyat:* {fiyat} TL\n"
             f"📊 *Durum:* Uzun vadeli ana portföy takibi ve teknik seviye korunuyor."
         )
-        telegram_mesaj_gonder(mesaj)
+        telegram_mesaj_gonder(mesaj, hedef_id)
 
 # --- 3. CASH - ANA PAZAR TARAYICISI ---
-def cash_ana_pazar_tara():
+def cash_ana_pazar_tara(hedef_id=None):
     sinyal_bulundu = True 
     if sinyal_bulundu:
         hisse = "ORNEK_ANA_PAZAR_HISSESI"
@@ -120,18 +118,16 @@ def cash_ana_pazar_tara():
             f"🎯 *Hedef Kâr:* {hedef_kar} | *Stop-Loss:* {stop_loss}\n"
             f"📊 *Not:* Hacim patlaması ve ani para girişi tespit edildi!"
         )
-        telegram_mesaj_gonder(mesaj)
+        telegram_mesaj_gonder(mesaj, hedef_id)
 
-def tum_taramalari_calistir():
+def tum_taramalari_calistir(hedef_id=None):
     """Tüm analizleri sırasıyla tetikler."""
-    print("Manuel/Uzaktan tarama tetiklendi...")
-    kuresel_piyasa_tara()
-    ana_portfoy_tara()
-    cash_ana_pazar_tara()
+    kuresel_piyasa_tara(hedef_id)
+    ana_portfoy_tara(hedef_id)
+    cash_ana_pazar_tara(hedef_id)
 
-# --- 4. TELEGRAM KOMUT DİNLEYİCİ (UZAKTAN TETİKLEME) ---
+# --- 4. TELEGRAM KOMUT DİNLEYİCİ ---
 def komutlari_dinle():
-    """Telegram'dan /tara komutu gelip gelmediğini sürekli kontrol eder."""
     offset = 0
     print("Telegram komut dinleyicisi aktif (/tara komutunu bekliyor)...")
     while True:
@@ -145,12 +141,11 @@ def komutlari_dinle():
                     offset = result["update_id"] + 1
                     message = result.get("message", {})
                     text = message.get("text", "")
+                    chat_id = message.get("chat", {}).get("id")
                     
-                    # Eğer bota /tara yazılırsa tüm analizleri anında çalıştırır
                     if text.strip() in ["/tara", "/test", "/tara@Borsa_bot"]:
-                        chat_id = message.get("chat", {}).get("id")
-                        telegram_mesaj_gonder("🔄 *Uzaktan komut alındı, tarama başlatılıyor...*")
-                        tum_taramalari_calistir()
+                        telegram_mesaj_gonder("🔄 *Komut alındı, tarama başlatılıyor...*", chat_id)
+                        tum_taramalari_calistir(chat_id)
         except Exception as e:
             print(f"Komut dinleme hatası: {e}")
             time.sleep(5)
@@ -158,8 +153,8 @@ def komutlari_dinle():
 # --- ANA ÇALIŞTIRMA DÖNGÜSÜ ---
 if __name__ == "__main__":
     print("Bot başlatıldı...")
-    # İlk açılışta bir kez çalıştır
+    # İlk açılışta kanala bir kez rapor atar
     tum_taramalari_calistir()
     
-    # Ardından Telegram'dan /tara komutu gelmesini beklemek üzere dinleyiciyi başlat
+    # Komutları dinlemeye başlar
     komutlari_dinle()

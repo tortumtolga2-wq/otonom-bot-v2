@@ -1,11 +1,15 @@
 import os
 import time
 import requests
+import yfinance as yf
 
 # --- AYARLAR VE TOKEN BİLGİLERİ ---
 TELEGRAM_BOT_TOKEN = "BURAYA_BOT_TOKENINIZI_YAZIN"
-# Mevcut Telegram Chat ID'n buraya doğrudan işlenmiştir:
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "MEVCUT_CHAT_ID_BURAYA")
+
+# Ücretsiz API Anahtarlarını buraya ekleyebilirsin (İsteğe bağlı ama önerilir)
+ALPHA_VANTAGE_KEY = os.environ.get("ALPHA_VANTAGE_KEY", "BURAYA_ALPHA_VANTAGE_KEY")
+FINNHUB_KEY = os.environ.get("FINNHUB_KEY", "BURAYA_FINNHUB_KEY")
 
 def telegram_mesaj_gonder(mesaj: str):
     """Telegram kanalına mesaj gönderen temel fonksiyon."""
@@ -21,11 +25,86 @@ def telegram_mesaj_gonder(mesaj: str):
     except Exception as e:
         print(f"Telegram mesaj hatası: {e}")
 
-# --- 1. ANA PORTFÖY TARAYICISI (Mevcut Büyük Şirketler / Yıldız Pazar) ---
-def ana_portfoy_tara():
-    # Burada ana portföy hisseleri taranır
-    sinyal_aktif = True # Örnek simüle edilmiş sinyal
+def alpha_vantage_veri_cek(sembol):
+    """Alpha Vantage üzerinden ücretsiz veri çekme yedek kaynağı."""
+    try:
+        url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={sembol}&apikey={ALPHA_VANTAGE_KEY}"
+        response = requests.get(url, timeout=5)
+        data = response.json()
+        fiyat = data.get("Global Quote", {}).get("05. price")
+        if fiyat:
+            return float(fiyat)
+    except Exception:
+        pass
+    return None
+
+def finnhub_veri_cek(sembol):
+    """Finnhub üzerinden ücretsiz veri çekme yedek kaynağı."""
+    try:
+        url = f"https://finnhub.io/api/v1/quote?symbol={sembol}&token={FINNHUB_KEY}"
+        response = requests.get(url, timeout=5)
+        data = response.json()
+        fiyat = data.get("c") # Güncel kapanış/anlık fiyat
+        if fiyat and fiyat > 0:
+            return float(fiyat)
+    except Exception:
+        pass
+    return None
+
+def guvenli_veri_cek(takip_sozlugu):
+    """
+    Çoklu Kaynak (Fallback) Mekanizması:
+    1. Önce yfinance denenir.
+    2. Başarısız olursa Alpha Vantage denenir.
+    3. O da olmazsa Finnhub yedek API'si devreye girer.
+    """
+    veriler = {}
+    for isim, sembol in takip_sozlugu.items():
+        fiyat = None
+        
+        # 1. Kaynak: yfinance
+        try:
+            tiker = yf.Ticker(sembol)
+            df = tiker.history(period="1d")
+            if not df.empty:
+                fiyat = df['Close'].iloc[-1]
+        except Exception:
+            pass
+            
+        # 2. Kaynak: Alpha Vantage (Eğer yfinance başarısızsa ve anahtar tanımlıysa)
+        if fiyat is None and ALPHA_VANTAGE_KEY != "BURAYA_ALPHA_VANTAGE_KEY":
+            fiyat = alpha_vantage_veri_cek(sembol)
+            
+        # 3. Kaynak: Finnhub (Eğer önceki kaynaklar başarısızsa ve anahtar tanımlıysa)
+        if fiyat is None and FINNHUB_KEY != "BURAYA_FINNHUB_KEY":
+            fiyat = finnhub_veri_cek(sembol)
+            
+        if fiyat is not imagenes and fiyat is not None:
+            veriler[isim] = fiyat
+        else:
+            print(f"⚠️ Uyarı: {isim} ({sembol}) için hiçbir veri kaynağından anlık fiyat alınamadı.")
+            
+    return veriler
+
+# --- 1. KÜRESEL PİYASA RAPORU (Çoklu Kaynak Destekli) ---
+def kuresel_piyasa_tara():
+    takip_listesi = {
+        "ABD Teknoloji (QQQ)": "QQQ",
+        "ABD Geniş Piyasa (SPY)": "SPY",
+        "Gelişen Piyasalar (EEM)": "EEM"
+    }
     
+    sonuclar = guvenli_veri_cek(takip_listesi)
+    
+    if sonuclar:
+        rapor = "🌐 *Küresel Para Akışı & Sektör Raporu*\n"
+        for isim, fiyat in sonuclar.items():
+            rapor += f"🔹 {isim}: {fiyat:.2f}\n"
+        telegram_mesaj_gonder(rapor)
+
+# --- 2. ANA PORTFÖY TARAYICISI (Yıldız Pazar) ---
+def ana_portfoy_tara():
+    sinyal_aktif = True 
     if sinyal_aktif:
         hisse = "GARAN" 
         fiyat = 112.50
@@ -37,14 +116,9 @@ def ana_portfoy_tara():
         )
         telegram_mesaj_gonder(mesaj)
 
-# --- 2. CASH - ANA PAZAR TARAYICISI (10.000 TL'lik Trade Bütçesi) ---
+# --- 3. CASH - ANA PAZAR TARAYICISI (10.000 TL'lik Trade Bütçesi) ---
 def cash_ana_pazar_tara():
-    """
-    Sadece Ana Pazar hisselerini tarar. 
-    Hacim patlaması ve ani para girişine göre orta-riskli / riskli sinyal üretir.
-    """
-    sinyal_bulundu = True # Örnek simüle edilmiş sinyal
-    
+    sinyal_bulundu = True 
     if sinyal_bulundu:
         hisse = "ORNEK_ANA_PAZAR_HISSESI"
         fiyat = 45.20
@@ -66,11 +140,8 @@ def cash_ana_pazar_tara():
 if __name__ == "__main__":
     print("Bot başlatıldı ve piyasa takibi aktif...")
     try:
-        # Ana portföy kontrolü
+        kuresel_piyasa_tara()
         ana_portfoy_tara()
-        
-        # Cash - Ana Pazar kontrolü
         cash_ana_pazar_tara()
-        
     except Exception as e:
-        print(f"Çalışma sırasında hata oluştu: {e}")
+        print(f"Chalışma sırasında hata oluştu: {e}")

@@ -6,7 +6,7 @@ from flask import Flask, request
 app = Flask(__name__)
 
 # --- AYARLAR VE TOKEN BİLGİLERİ ---
-TELEGRAM_BOT_TOKEN = "BURAYA_BOT_TOKENINIZI_YAZIN"
+TELEGRAM_BOT_TOKEN = "8809685206:AAEkCfzyjMKc622Z7nR5tvtzIYnjFGYKY-k"
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "MEVCUT_CHAT_ID_BURAYA")
 
 # Ücretsiz API Anahtarları
@@ -128,7 +128,7 @@ def tum_taramalari_calistir(hedef_id=None):
     ana_portfoy_tara(hedef_id)
     cash_ana_pazar_tara(hedef_id)
 
-# --- FLASK WEB SUNUCUSU VE TELEGRAM WEBHOOK / TETİKLEYİCİ ---
+# --- FLASK WEB SUNUCUSU VE TELEGRAM WEBHOOK ---
 @app.route("/")
 def ana_sayfa():
     return "Borsa Botu Aktif ve Çalışıyor!", 200
@@ -142,8 +142,8 @@ def telegram_webhook():
         text = message.get("text", "")
         chat_id = message.get("chat", {}).get("id")
         
-        if text.strip() in ["/tara", "/test"]:
-            telegram_mesaj_gonder("🔄 *Web servis üzerinden komut alındı, tarama başlatılıyor...*", chat_id)
+        if text.strip() in ["/tara", "/test", "/tara@Borsa_bot"]:
+            telegram_mesaj_gonder("🔄 *Komut alındı, tarama başlatılıyor...*", chat_id)
             tum_taramalari_calistir(chat_id)
             
     return "OK", 200

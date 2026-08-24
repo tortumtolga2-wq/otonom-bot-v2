@@ -1,7 +1,9 @@
 import os
-import time
 import requests
 import yfinance as yf
+from flask import Flask, request
+
+app = Flask(__name__)
 
 # --- AYARLAR VE TOKEN BİLGİLERİ ---
 TELEGRAM_BOT_TOKEN = "BURAYA_BOT_TOKENINIZI_YAZIN"
@@ -126,35 +128,25 @@ def tum_taramalari_calistir(hedef_id=None):
     ana_portfoy_tara(hedef_id)
     cash_ana_pazar_tara(hedef_id)
 
-# --- 4. TELEGRAM KOMUT DİNLEYİCİ ---
-def komutlari_dinle():
-    offset = 0
-    print("Telegram komut dinleyicisi aktif (/tara komutunu bekliyor)...")
-    while True:
-        try:
-            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates?offset={offset}&timeout=30"
-            response = requests.get(url, timeout=35)
-            data = response.json()
-            
-            if data.get("ok"):
-                for result in data.get("result", []):
-                    offset = result["update_id"] + 1
-                    message = result.get("message", {})
-                    text = message.get("text", "")
-                    chat_id = message.get("chat", {}).get("id")
-                    
-                    if text.strip() in ["/tara", "/test", "/tara@Borsa_bot"]:
-                        telegram_mesaj_gonder("🔄 *Komut alındı, tarama başlatılıyor...*", chat_id)
-                        tum_taramalari_calistir(chat_id)
-        except Exception as e:
-            print(f"Komut dinleme hatası: {e}")
-            time.sleep(5)
+# --- FLASK WEB SUNUCUSU VE TELEGRAM WEBHOOK / TETİKLEYİCİ ---
+@app.route("/")
+def ana_sayfa():
+    return "Borsa Botu Aktif ve Çalışıyor!", 200
 
-# --- ANA ÇALIŞTIRMA DÖNGÜSÜ ---
+@app.route("/webhook", methods=["POST"])
+def telegram_webhook():
+    """Telegram'dan gelen komutları anında karşılayan uç nokta."""
+    data = request.get_json()
+    if data and "message" in data:
+        message = data["message"]
+        text = message.get("text", "")
+        chat_id = message.get("chat", {}).get("id")
+        
+        if text.strip() in ["/tara", "/test"]:
+            telegram_mesaj_gonder("🔄 *Web servis üzerinden komut alındı, tarama başlatılıyor...*", chat_id)
+            tum_taramalari_calistir(chat_id)
+            
+    return "OK", 200
+
 if __name__ == "__main__":
-    print("Bot başlatıldı...")
-    # İlk açılışta kanala bir kez rapor atar
-    tum_taramalari_calistir()
-    
-    # Komutları dinlemeye başlar
-    komutlari_dinle()
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))

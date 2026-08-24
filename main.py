@@ -7,7 +7,7 @@ import yfinance as yf
 TELEGRAM_BOT_TOKEN = "BURAYA_BOT_TOKENINIZI_YAZIN"
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "MEVCUT_CHAT_ID_BURAYA")
 
-# Ücretsiz API Anahtarlarını buraya ekleyebilirsin (İsteğe bağlı ama önerilir)
+# Ücretsiz API Anahtarları
 ALPHA_VANTAGE_KEY = os.environ.get("ALPHA_VANTAGE_KEY", "BURAYA_ALPHA_VANTAGE_KEY")
 FINNHUB_KEY = os.environ.get("FINNHUB_KEY", "BURAYA_FINNHUB_KEY")
 
@@ -26,7 +26,6 @@ def telegram_mesaj_gonder(mesaj: str):
         print(f"Telegram mesaj hatası: {e}")
 
 def alpha_vantage_veri_cek(sembol):
-    """Alpha Vantage üzerinden ücretsiz veri çekme yedek kaynağı."""
     try:
         url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={sembol}&apikey={ALPHA_VANTAGE_KEY}"
         response = requests.get(url, timeout=5)
@@ -39,12 +38,11 @@ def alpha_vantage_veri_cek(sembol):
     return None
 
 def finnhub_veri_cek(sembol):
-    """Finnhub üzerinden ücretsiz veri çekme yedek kaynağı."""
     try:
         url = f"https://finnhub.io/api/v1/quote?symbol={sembol}&token={FINNHUB_KEY}"
         response = requests.get(url, timeout=5)
         data = response.json()
-        fiyat = data.get("c") # Güncel kapanış/anlık fiyat
+        fiyat = data.get("c")
         if fiyat and fiyat > 0:
             return float(fiyat)
     except Exception:
@@ -52,17 +50,9 @@ def finnhub_veri_cek(sembol):
     return None
 
 def guvenli_veri_cek(takip_sozlugu):
-    """
-    Çoklu Kaynak (Fallback) Mekanizması:
-    1. Önce yfinance denenir.
-    2. Başarısız olursa Alpha Vantage denenir.
-    3. O da olmazsa Finnhub yedek API'si devreye girer.
-    """
     veriler = {}
     for isim, sembol in takip_sozlugu.items():
         fiyat = None
-        
-        # 1. Kaynak: yfinance
         try:
             tiker = yf.Ticker(sembol)
             df = tiker.history(period="1d")
@@ -71,38 +61,34 @@ def guvenli_veri_cek(takip_sozlugu):
         except Exception:
             pass
             
-        # 2. Kaynak: Alpha Vantage (Eğer yfinance başarısızsa ve anahtar tanımlıysa)
         if fiyat is None and ALPHA_VANTAGE_KEY != "BURAYA_ALPHA_VANTAGE_KEY":
             fiyat = alpha_vantage_veri_cek(sembol)
             
-        # 3. Kaynak: Finnhub (Eğer önceki kaynaklar başarısızsa ve anahtar tanımlıysa)
         if fiyat is None and FINNHUB_KEY != "BURAYA_FINNHUB_KEY":
             fiyat = finnhub_veri_cek(sembol)
             
-        if fiyat is not imagenes and fiyat is not None:
+        if fiyat is not None:
             veriler[isim] = fiyat
         else:
             print(f"⚠️ Uyarı: {isim} ({sembol}) için hiçbir veri kaynağından anlık fiyat alınamadı.")
             
     return veriler
 
-# --- 1. KÜRESEL PİYASA RAPORU (Çoklu Kaynak Destekli) ---
+# --- 1. KÜRESEL PİYASA RAPORU ---
 def kuresel_piyasa_tara():
     takip_listesi = {
         "ABD Teknoloji (QQQ)": "QQQ",
         "ABD Geniş Piyasa (SPY)": "SPY",
         "Gelişen Piyasalar (EEM)": "EEM"
     }
-    
     sonuclar = guvenli_veri_cek(takip_listesi)
-    
     if sonuclar:
         rapor = "🌐 *Küresel Para Akışı & Sektör Raporu*\n"
         for isim, fiyat in sonuclar.items():
             rapor += f"🔹 {isim}: {fiyat:.2f}\n"
         telegram_mesaj_gonder(rapor)
 
-# --- 2. ANA PORTFÖY TARAYICISI (Yıldız Pazar) ---
+# --- 2. ANA PORTFÖY TARAYICISI ---
 def ana_portfoy_tara():
     sinyal_aktif = True 
     if sinyal_aktif:
@@ -116,7 +102,7 @@ def ana_portfoy_tara():
         )
         telegram_mesaj_gonder(mesaj)
 
-# --- 3. CASH - ANA PAZAR TARAYICISI (10.000 TL'lik Trade Bütçesi) ---
+# --- 3. CASH - ANA PAZAR TARAYICISI ---
 def cash_ana_pazar_tara():
     sinyal_bulundu = True 
     if sinyal_bulundu:
@@ -136,12 +122,44 @@ def cash_ana_pazar_tara():
         )
         telegram_mesaj_gonder(mesaj)
 
+def tum_taramalari_calistir():
+    """Tüm analizleri sırasıyla tetikler."""
+    print("Manuel/Uzaktan tarama tetiklendi...")
+    kuresel_piyasa_tara()
+    ana_portfoy_tara()
+    cash_ana_pazar_tara()
+
+# --- 4. TELEGRAM KOMUT DİNLEYİCİ (UZAKTAN TETİKLEME) ---
+def komutlari_dinle():
+    """Telegram'dan /tara komutu gelip gelmediğini sürekli kontrol eder."""
+    offset = 0
+    print("Telegram komut dinleyicisi aktif (/tara komutunu bekliyor)...")
+    while True:
+        try:
+            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates?offset={offset}&timeout=30"
+            response = requests.get(url, timeout=35)
+            data = response.json()
+            
+            if data.get("ok"):
+                for result in data.get("result", []):
+                    offset = result["update_id"] + 1
+                    message = result.get("message", {})
+                    text = message.get("text", "")
+                    
+                    # Eğer bota /tara yazılırsa tüm analizleri anında çalıştırır
+                    if text.strip() in ["/tara", "/test", "/tara@Borsa_bot"]:
+                        chat_id = message.get("chat", {}).get("id")
+                        telegram_mesaj_gonder("🔄 *Uzaktan komut alındı, tarama başlatılıyor...*")
+                        tum_taramalari_calistir()
+        except Exception as e:
+            print(f"Komut dinleme hatası: {e}")
+            time.sleep(5)
+
 # --- ANA ÇALIŞTIRMA DÖNGÜSÜ ---
 if __name__ == "__main__":
-    print("Bot başlatıldı ve piyasa takibi aktif...")
-    try:
-        kuresel_piyasa_tara()
-        ana_portfoy_tara()
-        cash_ana_pazar_tara()
-    except Exception as e:
-        print(f"Chalışma sırasında hata oluştu: {e}")
+    print("Bot başlatıldı...")
+    # İlk açılışta bir kez çalıştır
+    tum_taramalari_calistir()
+    
+    # Ardından Telegram'dan /tara komutu gelmesini beklemek üzere dinleyiciyi başlat
+    komutlari_dinle()

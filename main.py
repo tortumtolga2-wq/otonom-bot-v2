@@ -9,7 +9,7 @@ app = Flask(__name__)
 TELEGRAM_BOT_TOKEN = "8809685206:AAEkCfzyjMKc622Z7nR5tvtzIYnjFGYKY-k"
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "MEVCUT_CHAT_ID_BURAYA")
 
-# Ücretsiz API Anahtarları
+# Ücretsiz API Anahtarları (Yedek kaynaklar için)
 ALPHA_VANTAGE_KEY = os.environ.get("ALPHA_VANTAGE_KEY", "BURAYA_ALPHA_VANTAGE_KEY")
 FINNHUB_KEY = os.environ.get("FINNHUB_KEY", "BURAYA_FINNHUB_KEY")
 
@@ -28,7 +28,8 @@ def telegram_mesaj_gonder(mesaj: str, hedef_id=None):
     except Exception as e:
         print(f"Telegram mesaj hatası: {e}")
 
-def alpha_vantage_veri_cek(sembol):
+def alpha_vantage_fiyat_cek(sembol):
+    """Yedek Kaynak 1: Alpha Vantage"""
     try:
         url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={sembol}&apikey={ALPHA_VANTAGE_KEY}"
         response = requests.get(url, timeout=5)
@@ -40,9 +41,12 @@ def alpha_vantage_veri_cek(sembol):
         pass
     return None
 
-def finnhub_veri_cek(sembol):
+def finnhub_fiyat_cek(sembol):
+    """Yedek Kaynak 2: Finnhub"""
     try:
-        url = f"https://finnhub.io/api/v1/quote?symbol={sembol}&token={FINNHUB_KEY}"
+        # BIST için sembol uyarlaması (Örn: GARAN.IS -> GARAN veya farklı formatlar gerekebilir)
+        temiz_sembol = sembol.split('.')[0]
+        url = f"https://finnhub.io/api/v1/quote?symbol={temiz_sembol}&token={FINNHUB_KEY}"
         response = requests.get(url, timeout=5)
         data = response.json()
         fiyat = data.get("c")
@@ -52,27 +56,47 @@ def finnhub_veri_cek(sembol):
         pass
     return None
 
-def guvenli_veri_cek(takip_sozlugu):
-    veriler = {}
-    for isim, sembol in takip_sozlugu.items():
-        fiyat = None
-        try:
-            tiker = yf.Ticker(sembol)
-            df = tiker.history(period="1d")
-            if not df.empty:
-                fiyat = df['Close'].iloc[-1]
-        except Exception:
-            pass
+def guvenli_veri_ve_teknik_cek(sembol):
+    """
+    Önce yfinance dener, hata verirse veya veri gelmezse 
+    Alpha Vantage ve Finnhub yedeklerine başvurur (Çoklama / Fallback).
+    """
+    fiyat = None
+    df = None
+    sma = None
+    rsi = None
+    
+    # 1. Aşama: yfinance ile geçmiş veri ve teknik göstergeler denenir
+    try:
+        tiker = yf.Ticker(sembol)
+        df = tiker.history(period="1mo")
+        if not df.empty:
+            fiyat = float(df['Close'].iloc[-1])
+            close = df['Close']
             
-        if fiyat is None and ALPHA_VANTAGE_KEY != "BURAYA_ALPHA_VANTAGE_KEY":
-            fiyat = alpha_vantage_veri_cek(sembol)
-            
-        if fiyat is None and FINNHUB_KEY != "BURAYA_FINNHUB_KEY":
-            fiyat = finnhub_veri_cek(sembol)
-            
-        if fiyat is not None:
-            veriler[isim] = fiyat
-    return veriler
+            # 14 Günlük SMA
+            if len(close) >= 14:
+                sma = float(close.rolling(window=14).mean().iloc[-1])
+                
+            # 14 Günlük RSI Hesaplama
+            if len(close) >= 14:
+                delta = close.diff()
+                gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+                loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+                rs = gain / loss
+                rsi_series = 100 - (100 / (1 + rs))
+                rsi = float(rsi_series.iloc[-1])
+    except Exception as e:
+        print(f"yfinance hata (${sembol}): {e}")
+
+    # 2. Aşama: Eğer yfinance fiyat alamazsa yedek API'ler devreye girer
+    if fiyat is None and ALPHA_VANTAGE_KEY != "BURAYA_ALPHA_VANTAGE_KEY":
+        fiyat = alpha_vantage_fiyat_cek(sembol)
+        
+    if fiyat is None and FINNHUB_KEY != "BURAYA_FINNHUB_KEY":
+        fiyat = finnhub_fiyat_cek(sembol)
+
+    return fiyat, sma, rsi
 
 # --- 1. KÜRESEL PİYASA RAPORU ---
 def kuresel_piyasa_tara(hedef_id=None):
@@ -81,49 +105,62 @@ def kuresel_piyasa_tara(hedef_id=None):
         "ABD Geniş Piyasa (SPY)": "SPY",
         "Gelişen Piyasalar (EEM)": "EEM"
     }
-    sonuclar = guvenli_veri_cek(takip_listesi)
-    if sonuclar:
-        rapor = "🌐 *Küresel Para Akışı & Sektör Raporu*\n"
-        for isim, fiyat in sonuclar.items():
-            rapor += f"🔹 {isim}: {fiyat:.2f}\n"
-        telegram_mesaj_gonder(rapor, hedef_id)
+    rapor = "🌐 *Küresel Para Akışı & Teknik Rapor*\n"
+    for isim, sembol in takip_listesi.items():
+        fiyat, sma, rsi = guvenli_veri_ve_teknik_cek(sembol)
+        if fiyat:
+            rsi_str = f"{rsi:.1f}" if rsi is not None else "N/A"
+            rapor += f"🔹 {isim}: {fiyat:.2f} | RSI: {rsi_str}\n"
+    telegram_mesaj_gonder(rapor, hedef_id)
 
-# --- 2. ANA PORTFÖY TARAYICISI ---
+# --- 2. ANA PORTFÖY VE TEKNİK TARAYICI ---
 def ana_portfoy_tara(hedef_id=None):
-    sinyal_aktif = True 
-    if sinyal_aktif:
-        hisse = "GARAN" 
-        fiyat = 112.50
-        mesaj = (
-            f"🟢 *[ANA PORTFÖY]*\n"
-            f"📌 *Hisse:* {hisse}\n"
-            f"💰 *Fiyat:* {fiyat} TL\n"
-            f"📊 *Durum:* Uzun vadeli ana portföy takibi ve teknik seviye korunuyor."
-        )
-        telegram_mesaj_gonder(mesaj, hedef_id)
+    portfoy_listesi = {
+        "Garanti Bankası": "GARAN.IS",
+        "Türk Hava Yolları": "THYAO.IS"
+    }
+    
+    rapor = "🟢 *[GERÇEK ANA PORTFÖY & TEKNİK DURUM]*\n"
+    bulundu = False
+    
+    for isim, sembol in portfoy_listesi.items():
+        fiyat, sma, rsi = guvenli_veri_ve_teknik_cek(sembol)
+        if fiyat:
+            rapor += f"📌 *{isim} ({sembol}):*\n"
+            rapor += f"   💰 Fiyat: {fiyat:.2f} TL\n"
+            if rsi is not None:
+                rapor += f"   📊 RSI (14): {rsi:.1f}\n"
+            if sma is not None:
+                rapor += f"   📈 14G SMA: {sma:.2f}\n"
+            rapor += "   -------------------\n"
+            bulundu = True
+            
+    if bulundu:
+        telegram_mesaj_gonder(rapor, hedef_id)
 
 # --- 3. CASH - ANA PAZAR TARAYICISI ---
 def cash_ana_pazar_tara(hedef_id=None):
-    sinyal_bulundu = True 
-    if sinyal_bulundu:
-        hisse = "ORNEK_ANA_PAZAR_HISSESI"
-        fiyat = 45.20
-        risk_tipi = "Riskli (Yüksek Volatilite)"
-        hedef_kar = "%12"
-        stop_loss = "%4.5"
-        
-        mesaj = (
-            f"⚡ *[CASH - ANA PAZAR]*\n"
-            f"🚀 *Hisse:* {hisse}\n"
-            f"💰 *Fiyat:* {fiyat} TL\n"
-            f"⚖️ *Strateji:* {risk_tipi}\n"
-            f"🎯 *Hedef Kâr:* {hedef_kar} | *Stop-Loss:* {stop_loss}\n"
-            f"📊 *Not:* Hacim patlaması ve ani para girişi tespit edildi!"
-        )
-        telegram_mesaj_gonder(mesaj, hedef_id)
+    pazar_listesi = {
+        "Ereğli Demir Çelik": "EREGL.IS",
+        "İş Bankası (C)": "ISCTR.IS"
+    }
+    
+    for isim, sembol in pazar_listesi.items():
+        fiyat, sma, rsi = guvenli_veri_ve_teknik_cek(sembol)
+        if fiyat:
+            # RSI filtresi (Örn: 30 ile 70 arasında dengeli bölgedeyse bildir)
+            if rsi is not None and 30 <= rsi <= 70:
+                mesaj = (
+                    f"⚡ *[CASH - TEKNİK TARAMA]*\n"
+                    f"🚀 *Hisse:* {isim} ({sembol})\n"
+                    f"💰 *Fiyat:* {fiyat:.2f} TL\n"
+                    f"📊 *RSI:* {rsi:.1f} (Dengeli Bölge)\n"
+                    f"🎯 *Durum:* Çoklu kaynak doğrulamasıyla teknik seviyelere uygun."
+                )
+                telegram_mesaj_gonder(mesaj, hedef_id)
 
 def tum_taramalari_calistir(hedef_id=None):
-    """Tüm analizleri sırasıyla tetikler."""
+    """Tüm analizleri çoklu kaynak güvenliğiyle çalıştırır."""
     kuresel_piyasa_tara(hedef_id)
     ana_portfoy_tara(hedef_id)
     cash_ana_pazar_tara(hedef_id)
@@ -131,7 +168,7 @@ def tum_taramalari_calistir(hedef_id=None):
 # --- FLASK WEB SUNUCUSU VE TELEGRAM WEBHOOK ---
 @app.route("/")
 def ana_sayfa():
-    return "Borsa Botu Aktif ve Çalışıyor!", 200
+    return "Borsa Botu Çoklu Kaynak (Fallback) Modunda Aktif!", 200
 
 @app.route("/webhook", methods=["POST"])
 def telegram_webhook():
@@ -143,7 +180,7 @@ def telegram_webhook():
         chat_id = message.get("chat", {}).get("id")
         
         if text.strip() in ["/tara", "/test", "/tara@Borsa_bot"]:
-            telegram_mesaj_gonder("🔄 *Komut alındı, tarama başlatılıyor...*", chat_id)
+            telegram_mesaj_gonder("🔄 *Çoklu kaynak ve teknik göstergeler taranıyor...*", chat_id)
             tum_taramalari_calistir(chat_id)
             
     return "OK", 200

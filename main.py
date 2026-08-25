@@ -14,22 +14,23 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "MEVCUT_CHAT_ID_BURAYA")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "BURAYA_GEMINI_API_KEY")
 
 POZISYON_DOSYASI = "aktif_pozisyonlar.json"
+ALARM_DURUM_DOSYASI = "alarm_durumlari.json"  # Aynı alarmın sürekli spam atmasını önlemek için hafıza
 
-def pozisyonlari_yukle():
-    if os.path.exists(POZISYON_DOSYASI):
+def dosya_yukle(dosya_adi):
+    if os.path.exists(dosya_adi):
         try:
-            with open(POZISYON_DOSYASI, "r", encoding="utf-8") as f:
+            with open(dosya_adi, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
             pass
     return {}
 
-def pozisyonlari_kaydet(veri):
+def dosya_kaydet(dosya_adi, veri):
     try:
-        with open(POZISYON_DOSYASI, "w", encoding="utf-8") as f:
+        with open(dosya_adi, "w", encoding="utf-8") as f:
             json.dump(veri, f, ensure_ascii=False, indent=4)
     except Exception as e:
-        print(f"Pozisyon kayıt hatası: {e}")
+        print(f"Kayıt hatası ({dosya_adi}): {e}")
 
 def telegram_mesaj_gonder_butonlu(mesaj: str, reply_markup=None, hedef_id=None):
     chat_id = hedef_id if hedef_id else TELEGRAM_CHAT_ID
@@ -68,10 +69,9 @@ def guvenli_veri_ve_teknik_cek(sembol):
         print(f"yfinance hata ({sembol}): {e}")
     return fiyat, rsi
 
-# --- TARAMA VE AKILLI AÇIKLAMALI RAPORLAMA ---
+# --- 1. TAM RAPORLAMA (Komut veya Sabit Saat) ---
 def tum_taramalari_calistir(hedef_id=None):
-    # 1. Aktif Takip Edilen Pozisyonların Güncel Durumu
-    aktif_pos = pozisyonlari_yukle()
+    aktif_pos = dosya_yukle(POZISYON_DOSYASI)
     if aktif_pos:
         pos_rapor = "📊 *AKTİF POZİSYONLARINIZ VE TP/SL TAKİBİ*\n\n"
         for sembol, detay in aktif_pos.items():
@@ -86,7 +86,6 @@ def tum_taramalari_calistir(hedef_id=None):
                 pos_rapor += f"📌 *{detay['isim']}*: Fiyat bekleniyor...\n"
         telegram_mesaj_gonder_butonlu(pos_rapor, None, hedef_id)
 
-    # 2. Taktiksel Fırsatlar ve Akıllı Yönlendirme
     taktiksel_liste = {
         "NVIDIA (NVDA)": "NVDA",
         "Palantir (PLTR)": "PLTR",
@@ -100,7 +99,6 @@ def tum_taramalari_calistir(hedef_id=None):
             onerilen_tp = round(fiyat * 1.10, 2)
             onerilen_sl = round(fiyat * 0.93, 2)
             
-            # İstediğin net ve kısa akıllı yönlendirme mantığı
             if rsi > 70:
                 strateji_notu = "🔴 *Aşırı Primli:* Elinde varsa kâr al, elinde yoksa alma bekle."
             elif rsi < 35:
@@ -118,29 +116,66 @@ def tum_taramalari_calistir(hedef_id=None):
             
             keyboard = {
                 "inline_keyboard": [
-                    [
-                        {"text": "✅ Aldım / Takibe Başla", "callback_data": f"AL|{sembol}|{isim}|{fiyat}|{onerilen_tp}|{onerilen_sl}"}
-                    ],
-                    [
-                        {"text": "❌ Takibi Bırak (Pozisyonu Kapat)", "callback_data": f"SIL|{sembol}"}
-                    ]
+                    [{"text": "✅ Aldım / Takibe Başla", "callback_data": f"AL|{sembol}|{isim}|{fiyat}|{onerilen_tp}|{onerilen_sl}"}],
+                    [{"text": "❌ Takibi Bırak (Pozisyonu Kapat)", "callback_data": f"SIL|{sembol}"}]
                 ]
             }
             telegram_mesaj_gonder_butonlu(durum_metni, keyboard, hedef_id)
 
-# --- OTOMATİK ZAMANLAYICI ---
-def otomatik_gunluk_tarama():
-    print("⏰ Otomatik günlük portföy taraması tetiklendi...")
-    telegram_mesaj_gonder_butonlu("⏰ *Günlük Otomatik Portföy & Pozisyon Takip Raporu Başlatılıyor...*")
-    tum_taramalari_calistir(None)
+# --- 2. ARKA PLAN NÖBETÇİSİ (Anı Hareket / Alarm Takip Mekanizması) ---
+def arka_plan_ani_kontrol():
+    print("👀 Arka plan nöbetçisi piyasayı tarıyor...")
+    taktiksel_liste = {
+        "NVIDIA (NVDA)": "NVDA",
+        "Palantir (PLTR)": "PLTR",
+        "MP Materials (MP)": "MP",
+        "Resource Holding (REXC)": "REXC"
+    }
+    
+    alarm_gecmisi = dosya_yukle(ALARM_DURUM_DOSYASI)
+    degisiklik_oldu = False
 
+    for isim, sembol in taktiksel_liste.items():
+        fiyat, rsi = guvenli_veri_ve_teknik_cek(sembol)
+        if fiyat and rsi and str(fiyat) != "nan":
+            mevcut_durum = "NORMAL"
+            if rsi < 35:
+                mevcut_durum = "DIP"
+            elif rsi > 70:
+                mevcur_durum = "TEPE"
+                mevcut_durum = "TEPE"
+
+            # Eğer daha önceki durumu ile şimdiki kritik bölge durumu farklıysa alarm at
+            son_durum = alarm_gecmisi.get(sembol, "NORMAL")
+            if mevcut_durum in ["DIP", "TEPE"] and son_durum != mevcut_durum:
+                if mevcut_durum == "DIP":
+                    alarm_mesaj = f"🚨 *ANİ FIRSAT ALARMI!*\n\n📌 *{isim}* sert gevşeyerek dip bölgesine girdi!\n💰 Fiyat: {fiyat:.2f} | RSI: {rsi:.1f}\n💡 *Aksiyon:* Elinde yoksa kademeli alım düşünebilirsin."
+                else:
+                    alarm_mesaj = f"🚨 *ANİ KRİTİK TEPE ALARMI!*\n\n📌 *{isim}* ani yükselişle aşırı primli bölgeye ulaştı!\n💰 Fiyat: {fiyat:.2f} | RSI: {rsi:.1f}\n💡 *Aksiyon:* Elinde varsa kâr al (TP) zamanı gelmiş olabilir."
+                
+                telegram_mesaj_gonder_butonlu(alarm_mesaj, None, None)
+                alarm_gecmisi[sembol] = mevcut_durum
+                degisiklik_oldu = True
+            elif mevcut_durum == "NORMAL":
+                # Normale döndüyse hafızayı sıfırla ki tekrar girerse uyarsın
+                if son_durum != "NORMAL":
+                    alarm_gecmisi[sembol] = "NORMAL"
+                    degisiklik_oldu = True
+
+    if degisiklik_oldu:
+        dosya_kaydet(ALARM_DURUM_DOSYASI, alarm_gecmisi)
+
+# --- OTOMATİK ZAMANLAYICILAR ---
 scheduler = BackgroundScheduler()
-scheduler.add_job(func=otomatik_gunluk_tarama, trigger="cron", hour=9, minute=30)
+# 1. Sabit Günlük Rapor (Her gün 09:30'da)
+scheduler.add_job(func=lambda: tum_taramalari_calistir(None), trigger="cron", hour=9, minute=30)
+# 2. Arka Plan Nöbetçisi (Her 1 saatte bir ani hareketleri kontrol eder)
+scheduler.add_job(func=arka_plan_ani_kontrol, trigger="interval", hours=1)
 scheduler.start()
 
 @app.route("/")
 def ana_sayfa():
-    return "Portföy Takip & Akıllı Sinyal Botu Aktif!", 200
+    return "Portföy Takip & Hibrit Alarm Botu Aktif!", 200
 
 @app.route("/webhook", methods=["POST"])
 def telegram_webhook():
@@ -164,7 +199,7 @@ def telegram_webhook():
         parts = callback_data.split("|")
         islem = parts[0]
         
-        aktif_pos = pozisyonlari_yukle()
+        aktif_pos = dosya_yukle(POZISYON_DOSYASI)
         
         if islem == "AL":
             sembol = parts[1]
@@ -180,14 +215,14 @@ def telegram_webhook():
                 "tp": tp,
                 "sl": sl
             }
-            pozisyonlari_kaydet(aktif_pos)
+            dosya_kaydet(POZISYON_DOSYASI, aktif_pos)
             telegram_mesaj_gonder_butonlu(f"✅ *{isim}* başarıyla aktif takip listene eklendi! Maliyet: {maliyet}, TP: {tp}, SL: {sl}", None, chat_id)
             
         elif islem == "SIL":
             sembol = parts[1]
             if sembol in aktif_pos:
                 del aktif_pos[sembol]
-                pozisyonlari_kaydet(aktif_pos)
+                dosya_kaydet(POZISYON_DOSYASI, aktif_pos)
             telegram_mesaj_gonder_butonlu(f"❌ *{sembol}* pozisyon takipten çıkarıldı. (Genel piyasa taramalarında görünmeye devam edecek).", None, chat_id)
             
         try:

@@ -13,7 +13,6 @@ TELEGRAM_BOT_TOKEN = "8809685206:AAEkCfzyjMKc622Z7nR5tvtzIYnjFGYKY-k"
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "MEVCUT_CHAT_ID_BURAYA")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "BURAYA_GEMINI_API_KEY")
 
-# Aktif takip edilen pozisyonları saklamak için basit hafıza dosyası
 POZISYON_DOSYASI = "aktif_pozisyonlar.json"
 
 def pozisyonlari_yukle():
@@ -69,7 +68,7 @@ def guvenli_veri_ve_teknik_cek(sembol):
         print(f"yfinance hata ({sembol}): {e}")
     return fiyat, rsi
 
-# --- TARAMA VE BUTONLU RAPORLAMA ---
+# --- TARAMA VE AKILLI AÇIKLAMALI RAPORLAMA ---
 def tum_taramalari_calistir(hedef_id=None):
     # 1. Aktif Takip Edilen Pozisyonların Güncel Durumu
     aktif_pos = pozisyonlari_yukle()
@@ -87,7 +86,7 @@ def tum_taramalari_calistir(hedef_id=None):
                 pos_rapor += f"📌 *{detay['isim']}*: Fiyat bekleniyor...\n"
         telegram_mesaj_gonder_butonlu(pos_rapor, None, hedef_id)
 
-    # 2. Taktiksel Fırsatlar ve İnteraktif Butonlar
+    # 2. Taktiksel Fırsatlar ve Akıllı Yönlendirme
     taktiksel_liste = {
         "NVIDIA (NVDA)": "NVDA",
         "Palantir (PLTR)": "PLTR",
@@ -101,14 +100,22 @@ def tum_taramalari_calistir(hedef_id=None):
             onerilen_tp = round(fiyat * 1.10, 2)
             onerilen_sl = round(fiyat * 0.93, 2)
             
+            # İstediğin net ve kısa akıllı yönlendirme mantığı
+            if rsi > 70:
+                strateji_notu = "🔴 *Aşırı Primli:* Elinde varsa kâr al, elinde yoksa alma bekle."
+            elif rsi < 35:
+                strateji_notu = "🟢 *Dip / Fırsat Bölgesi:* Elinde yoksa kademeli al, elinde varsa tut."
+            else:
+                strateji_notu = "⚖️ *Dengeli / Bekle-Gör:* Nötr bölgede, acele etme."
+            
             durum_metni = (
                 f"🎯 *Taktiksel Sinyal: {isim}*\n"
                 f"💰 Güncel Fiyat: {fiyat:.2f} | RSI: {rsi:.1f}\n"
-                f"📈 Önerilen TP: {onerilen_tp} | SL: {onerilen_sl}\n\n"
+                f"💡 {strateji_notu}\n\n"
+                f"📈 Önerilen TP: {onerilen_tp} | SL: {onerilen_sl}\n"
                 f"Bu işlemi açtıysan aşağıdaki butonla takibe alabilirsin:"
             )
             
-            # İnteraktif Telegram Butonları
             keyboard = {
                 "inline_keyboard": [
                     [
@@ -133,13 +140,12 @@ scheduler.start()
 
 @app.route("/")
 def ana_sayfa():
-    return "Portföy Takip & İnteraktif Bot Aktif!", 200
+    return "Portföy Takip & Akıllı Sinyal Botu Aktif!", 200
 
 @app.route("/webhook", methods=["POST"])
 def telegram_webhook():
     data = request.get_json()
     
-    # 1. Kullanıcıdan Gelen Mesajlar (/tara vb.)
     if data and "message" in data:
         message = data["message"]
         text = message.get("text", "")
@@ -149,7 +155,6 @@ def telegram_webhook():
             telegram_mesaj_gonder_butonlu("🚀 *Tüm Listeler ve Aktif Pozisyonlar Taranıyor...*", None, chat_id)
             tum_taramalari_calistir(chat_id)
 
-    # 2. Buton Tıklamaları (Callback Query)
     elif data and "callback_query" in data:
         query = data["callback_query"]
         callback_data = query.get("data", "")
@@ -185,7 +190,6 @@ def telegram_webhook():
                 pozisyonlari_kaydet(aktif_pos)
             telegram_mesaj_gonder_butonlu(f"❌ *{sembol}* pozisyon takipten çıkarıldı. (Genel piyasa taramalarında görünmeye devam edecek).", None, chat_id)
             
-        # Telegram'a buton tıklandığını onaylayan boş istek
         try:
             requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery", json={"callback_query_id": query_id})
         except Exception:

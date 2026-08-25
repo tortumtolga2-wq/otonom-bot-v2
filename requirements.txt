@@ -1,6 +1,5 @@
 flask
+apscheduler
 yfinance
-pandas
 requests
-APScheduler
-gunicorn
+google-genai

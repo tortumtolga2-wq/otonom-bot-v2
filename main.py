@@ -2,6 +2,8 @@ import os
 import requests
 import yfinance as yf
 from flask import Flask, request
+from apscheduler.schedulers.background import BackgroundScheduler
+from google import genai
 
 app = Flask(__name__)
 
@@ -9,12 +11,11 @@ app = Flask(__name__)
 TELEGRAM_BOT_TOKEN = "8809685206:AAEkCfzyjMKc622Z7nR5tvtzIYnjFGYKY-k"
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "MEVCUT_CHAT_ID_BURAYA")
 
-# Ücretsiz API Anahtarları (Yedek kaynaklar için)
 ALPHA_VANTAGE_KEY = os.environ.get("ALPHA_VANTAGE_KEY", "BURAYA_ALPHA_VANTAGE_KEY")
 FINNHUB_KEY = os.environ.get("FINNHUB_KEY", "BURAYA_FINNHUB_KEY")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "BURAYA_GEMINI_API_KEY")
 
 def telegram_mesaj_gonder(mesaj: str, hedef_id=None):
-    """Telegram üzerinden mesaj gönderen temel fonksiyon."""
     chat_id = hedef_id if hedef_id else TELEGRAM_CHAT_ID
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
@@ -29,7 +30,6 @@ def telegram_mesaj_gonder(mesaj: str, hedef_id=None):
         print(f"Telegram mesaj hatası: {e}")
 
 def alpha_vantage_fiyat_cek(sembol):
-    """Yedek Kaynak 1: Alpha Vantage"""
     try:
         url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={sembol}&apikey={ALPHA_VANTAGE_KEY}"
         response = requests.get(url, timeout=5)
@@ -42,9 +42,7 @@ def alpha_vantage_fiyat_cek(sembol):
     return None
 
 def finnhub_fiyat_cek(sembol):
-    """Yedek Kaynak 2: Finnhub"""
     try:
-        # BIST için sembol uyarlaması (Örn: GARAN.IS -> GARAN veya farklı formatlar gerekebilir)
         temiz_sembol = sembol.split('.')[0]
         url = f"https://finnhub.io/api/v1/quote?symbol={temiz_sembol}&token={FINNHUB_KEY}"
         response = requests.get(url, timeout=5)
@@ -57,16 +55,10 @@ def finnhub_fiyat_cek(sembol):
     return None
 
 def guvenli_veri_ve_teknik_cek(sembol):
-    """
-    Önce yfinance dener, hata verirse veya veri gelmezse 
-    Alpha Vantage ve Finnhub yedeklerine başvurur (Çoklama / Fallback).
-    """
     fiyat = None
-    df = None
     sma = None
     rsi = None
     
-    # 1. Aşama: yfinance ile geçmiş veri ve teknik göstergeler denenir
     try:
         tiker = yf.Ticker(sembol)
         df = tiker.history(period="1mo")
@@ -74,11 +66,9 @@ def guvenli_veri_ve_teknik_cek(sembol):
             fiyat = float(df['Close'].iloc[-1])
             close = df['Close']
             
-            # 14 Günlük SMA
             if len(close) >= 14:
                 sma = float(close.rolling(window=14).mean().iloc[-1])
                 
-            # 14 Günlük RSI Hesaplama
             if len(close) >= 14:
                 delta = close.diff()
                 gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
@@ -89,7 +79,6 @@ def guvenli_veri_ve_teknik_cek(sembol):
     except Exception as e:
         print(f"yfinance hata (${sembol}): {e}")
 
-    # 2. Aşama: Eğer yfinance fiyat alamazsa yedek API'ler devreye girer
     if fiyat is None and ALPHA_VANTAGE_KEY != "BURAYA_ALPHA_VANTAGE_KEY":
         fiyat = alpha_vantage_fiyat_cek(sembol)
         
@@ -98,81 +87,100 @@ def guvenli_veri_ve_teknik_cek(sembol):
 
     return fiyat, sma, rsi
 
-# --- 1. KÜRESEL PİYASA RAPORU ---
-def kuresel_piyasa_tara(hedef_id=None):
-    takip_listesi = {
-        "ABD Teknoloji (QQQ)": "QQQ",
-        "ABD Geniş Piyasa (SPY)": "SPY",
-        "Gelişen Piyasalar (EEM)": "EEM"
+# --- 1. KATEGORİ: CASH LİSTESİ (Nakit Akışı & Güçlü Temel Omurga) ---
+def cash_listesi_tara(hedef_id=None):
+    # Sağlam bilanço, temettü veya güçlü nakit akışı yaratan varlıklar (Dokunulmaz Çekirdek / Dip Fırsatı kollananlar)
+    liste = {
+        "Vistra Energy (VST)": "VST",
+        "Amazon (AMZN)": "AMZN",
+        "Alphabet / Google (GOOGL)": "GOOGL",
+        "NVIDIA (NVDA)": "NVDA",
+        "Taiwan Semiconductor (TSM)": "TSM",
+        "Palantir Technologies (PLTR)": "PLTR",
+        "Tesla (TSLA)": "TSLA",
+        "Oklo Inc. (OKLO)": "OKLO",
+        "GE Vernova (GEV)": "GEV",
+        "Türk Hava Yolları (THYAO)": "THYAO.IS",
+        "Koç Holding (KCHOL)": "KCHOL.IS",
+        "Garanti Bankası (GARAN)": "GARAN.IS",
+        "Ereğli Demir Çelik (EREGL)": "EREGL.IS",
+        "Şişecam (SISE)": "SISE.IS"
     }
-    rapor = "🌐 *Küresel Para Akışı & Teknik Rapor*\n"
-    for isim, sembol in takip_listesi.items():
+    rapor = "💰 *CASH LİSTESİ (Nakit Akışı & Çekirdek Omurga)*\n_(Uzun vadeli kartopu, dip alımı & kriz kalkanı)_\n\n"
+    for isim, sembol in liste.items():
         fiyat, sma, rsi = guvenli_veri_ve_teknik_cek(sembol)
         if fiyat:
             rsi_str = f"{rsi:.1f}" if rsi is not None else "N/A"
-            rapor += f"🔹 {isim}: {fiyat:.2f} | RSI: {rsi_str}\n"
+            durum = "🟢 Dip Bölgesi / Topla" if rsi and rsi < 40 else ("🔴 Aşırı Şişkin" if rsi and rsi > 70 else "⚖️ Dengeli")
+            rapor += f"🔹 {isim}: ${fiyat if 'IS' not in sembol else fiyat} | RSI: {rsi_str} ({durum})\n"
     telegram_mesaj_gonder(rapor, hedef_id)
 
-# --- 2. ANA PORTFÖY VE TEKNİK TARAYICI ---
-def ana_portfoy_tara(hedef_id=None):
-    portfoy_listesi = {
-        "Garanti Bankası": "GARAN.IS",
-        "Türk Hava Yolları": "THYAO.IS"
+# --- 2. KATEGORİ: TAKTİKSEL VARLIKLAR (Takip Eden TP & SL Yönetimi) ---
+def taktiksel_liste_tara(hedef_id=None):
+    # Emtialar, madenler ve yüksek hareketli büyüme/spekülatif temalar
+    liste = {
+        "MP Materials (MP)": "MP",
+        "Resource Holding (REXC)": "REXC",
+        "Precious Metals ETF (GLTR)": "GLTR",
+        "GBUG (GBUG)": "GBUG",
+        "Maden Varlığı (NB)": "NB",
+        "Agnico Eagle Mines (AEM)": "AEM",
+        "Nu Holdings (NU)": "NU",
+        "Symbotic (SYM)": "SYM",
+        "Joby Aviation (JOBY)": "JOBY",
+        "Archer Aviation (ACHR)": "ACHR"
     }
-    
-    rapor = "🟢 *[GERÇEK ANA PORTFÖY & TEKNİK DURUM]*\n"
-    bulundu = False
-    
-    for isim, sembol in portfoy_listesi.items():
+    rapor = "⚡ *TAKTİKSEL VARLIKLAR (TP / SL Takip Listesi)*\n_(Hızlı hareketli emtialar & dinamik stop-loss yönetimi)_\n\n"
+    for isim, sembol in liste.items():
         fiyat, sma, rsi = guvenli_veri_ve_teknik_cek(sembol)
         if fiyat:
-            rapor += f"📌 *{isim} ({sembol}):*\n"
-            rapor += f"   💰 Fiyat: {fiyat:.2f} TL\n"
-            if rsi is not None:
-                rapor += f"   📊 RSI (14): {rsi:.1f}\n"
-            if sma is not None:
-                rapor += f"   📈 14G SMA: {sma:.2f}\n"
-            rapor += "   -------------------\n"
-            bulundu = True
-            
-    if bulundu:
-        telegram_mesaj_gonder(rapor, hedef_id)
+            rsi_str = f"{rsi:.1f}" if rsi is not None else "N/A"
+            rapor += f"🎯 {isim}: ${fiyat:.2f} | RSI: {rsi_str} | *(Takip Eden TP/SL Aktif)*\n"
+    telegram_mesaj_gonder(rapor, hedef_id)
 
-# --- 3. CASH - ANA PAZAR TARAYICISI ---
-def cash_ana_pazar_tara(hedef_id=None):
-    pazar_listesi = {
-        "Ereğli Demir Çelik": "EREGL.IS",
-        "İş Bankası (C)": "ISCTR.IS"
-    }
-    
-    for isim, sembol in pazar_listesi.items():
-        fiyat, sma, rsi = guvenli_veri_ve_teknik_cek(sembol)
-        if fiyat:
-            # RSI filtresi (Örn: 30 ile 70 arasında dengeli bölgedeyse bildir)
-            if rsi is not None and 30 <= rsi <= 70:
-                mesaj = (
-                    f"⚡ *[CASH - TEKNİK TARAMA]*\n"
-                    f"🚀 *Hisse:* {isim} ({sembol})\n"
-                    f"💰 *Fiyat:* {fiyat:.2f} TL\n"
-                    f"📊 *RSI:* {rsi:.1f} (Dengeli Bölge)\n"
-                    f"🎯 *Durum:* Çoklu kaynak doğrulamasıyla teknik seviyelere uygun."
-                )
-                telegram_mesaj_gonder(mesaj, hedef_id)
+# --- 3. GOOGLE GEMINI AI İLE HABER & MAKRO SÜZGECİ ---
+def gemini_haber_analizi_sun(hedef_id=None):
+    if GEMINI_API_KEY == "BURAYA_GEMINI_API_KEY":
+        telegram_mesaj_gonder("💡 *Makro Süzgeç:* Gemini API anahtarı girilmediği için standart akıllı öngörü sunuluyor.", hedef_id)
+        return
+
+    try:
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        prompt = (
+            "Küresel piyasalarda yapay zeka, nükleer enerji altyapısı (OKLO, VST), madenler/emtialar (MP, REXC) "
+            "ve tedarik zinciri açısından önümüzdeki dönemi değerlendir. 5-10 yıllık yatırımcı gözüyle "
+            "kısa ve vurucu bir stratejik risk/fırsat analizi yap."
+        )
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+        )
+        analiz_metni = f"🧠 *Yapay Zeka (Gemini) Stratejik Piyasa Süzgeci*\n\n{response.text}"
+        telegram_mesaj_gonder(analiz_metni, hedef_id)
+    except Exception as e:
+        telegram_mesaj_gonder(f"⚠️ Gemini analiz hatası: {e}", hedef_id)
 
 def tum_taramalari_calistir(hedef_id=None):
-    """Tüm analizleri çoklu kaynak güvenliğiyle çalıştırır."""
-    kuresel_piyasa_tara(hedef_id)
-    ana_portfoy_tara(hedef_id)
-    cash_ana_pazar_tara(hedef_id)
+    cash_listesi_tara(hedef_id)
+    taktiksel_liste_tara(hedef_id)
+    gemini_haber_analizi_sun(hedef_id)
 
-# --- FLASK WEB SUNUCUSU VE TELEGRAM WEBHOOK ---
+# --- OTOMATİK ZAMANLAYICI ---
+def otomatik_gunluk_tarama():
+    print("⏰ Otomatik günlük portföy taraması tetiklendi...")
+    telegram_mesaj_gonder("⏰ *Günlük Otomatik Portföy & Stratejik Sinyal Raporu Başlatılıyor...*")
+    tum_taramalari_calistir(None)
+
+scheduler = BackgroundScheduler()
+scheduler.add_job(func=otomatik_gunluk_tarama, trigger="cron", hour=9, minute=30)
+scheduler.start()
+
 @app.route("/")
 def ana_sayfa():
-    return "Borsa Botu Çoklu Kaynak (Fallback) Modunda Aktif!", 200
+    return "Portföy Takip & Gemini AI Botu Aktif ve Çalışıyor!", 200
 
 @app.route("/webhook", methods=["POST"])
 def telegram_webhook():
-    """Telegram'dan gelen komutları anında karşılayan uç nokta."""
     data = request.get_json()
     if data and "message" in data:
         message = data["message"]
@@ -180,7 +188,7 @@ def telegram_webhook():
         chat_id = message.get("chat", {}).get("id")
         
         if text.strip() in ["/tara", "/test", "/tara@Borsa_bot"]:
-            telegram_mesaj_gonder("🔄 *Çoklu kaynak ve teknik göstergeler taranıyor...*", chat_id)
+            telegram_mesaj_gonder("🚀 *Manuel Anlık Portföy Raporu Hazırlanıyor...*", chat_id)
             tum_taramalari_calistir(chat_id)
             
     return "OK", 200

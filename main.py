@@ -16,7 +16,6 @@ POZISYON_DOSYASI = "aktif_pozisyonlar.json"
 ALARM_DURUM_DOSYASI = "alarm_durumlari.json"
 TAKIP_LISTESI_DOSYASI = "taktiksel_liste.json"
 
-# Varsayılan Taktiksel Liste (Eğer kayıtlı dosya yoksa bunlarla başlar)
 VARSAYILAN_TAKIP_LISTESI = {
     "NVIDIA (NVDA)": "NVDA",
     "Palantir (PLTR)": "PLTR",
@@ -57,25 +56,72 @@ def telegram_mesaj_gonder_butonlu(mesaj: str, reply_markup=None, hedef_id=None):
     except Exception as e:
         print(f"Telegram mesaj hatası: {e}")
 
-def guvenli_veri_ve_teknik_cek(sembol):
+# --- GELİŞMİŞ TEKNİK ANALİZ MOTORU (RSI, Hacim, MACD, Bollinger) ---
+def gelismis_teknik_analiz(sembol):
     fiyat = None
     rsi = None
+    hacim_durumu = "NORMAL"
+    macd_durumu = "NÖTR"
+    bollinger_durumu = "NÖTR"
+    
     try:
         tiker = yf.Ticker(sembol)
-        df = tiker.history(period="1mo")
-        if df is not None and not df.empty:
+        df = tiker.history(period="2mo") # MACD ve Bollinger için biraz daha geniş veri
+        if df is not None and not df.empty and len(df) >= 30:
             fiyat = float(df['Close'].iloc[-1])
             close = df['Close']
-            if len(close) >= 14:
-                delta = close.diff()
-                gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-                loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-                rs = gain / loss
-                rsi_series = 100 - (100 / (1 + rs))
-                rsi = float(rsi_series.iloc[-1])
+            volume = df['Volume']
+            
+            # 1. Hacim Analizi (Son hacim, 20 günlük ortalama hacimden yüksek mi?)
+            vol_ortalama = volume.rolling(window=20).mean().iloc[-1]
+            son_vol = volume.iloc[-1]
+            if son_vol > (vol_ortalama * 1.3):
+                hacim_durumu = "YÜKSEK (Güçlü İşlem)"
+            elif son_vol < (vol_ortalama * 0.7):
+                hacim_durumu = "DÜŞÜK (Sığ Piyasalar)"
+            else:
+                hacim_durumu = "NORMAL"
+
+            # 2. RSI (14) Hesaplama
+            delta = close.diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            rs = gain / loss
+            rsi_series = 100 - (100 / (1 + rs))
+            rsi = float(rsi_series.iloc[-1])
+
+            # 3. Bollinger Bantları (20, 2)
+            sma20 = close.rolling(window=20).mean()
+            std20 = close.rolling(window=20).std()
+            upper_band = sma20 + (std20 * 2)
+            lower_band = sma20 - (std20 * 2)
+            
+            if fiyat <= lower_band.iloc[-1]:
+                bollinger_durumu = "ALT BANTTA (Aşırı Ucuz / Sıkışma)"
+            elif fiyat >= upper_band.iloc[-1]:
+                bollinger_durumu = "ÜST BANTTA (Aşırı Pahalı / Direnç)"
+            else:
+                bollinger_durumu = "BANT İÇİNDE"
+
+            # 4. MACD (12, 26, 9)
+            exp12 = close.ewm(span=12, adjust=False).mean()
+            exp26 = close.ewm(span=26, adjust=False).mean()
+            macd_line = exp12 - exp26
+            signal_line = macd_line.ewm(span=9, adjust=False).mean()
+            
+            if macd_line.iloc[-1] > signal_line.iloc[-1] and macd_line.iloc[-2] <= signal_line.iloc[-2]:
+                macd_durumu = "YUKARI KESİŞİM (Pozitif Momentum 🚀)"
+            elif macd_line.iloc[-1] < signal_line.iloc[-1] and macd_line.iloc[-2] >= signal_line.iloc[-2]:
+                macd_durumu = "AŞAĞI KESİŞİM (Negatif Momentum ⚠️)"
+            elif macd_line.iloc[-1] > signal_line.iloc[-1]:
+                macd_durumu = "YUKARI TREND"
+            else:
+                macd_durumu = "DÜŞÜŞ TRENDİ"
+
     except Exception as e:
-        print(f"yfinance hata ({sembol}): {e}")
-    return fiyat, rsi
+        print(f"Teknik analiz hata ({sembol}): {e}")
+        
+    return fiyat, rsi, hacim_durumu, macd_durumu, bollinger_durumu
 
 # --- 1. TAM RAPORLAMA ---
 def tum_taramalari_calistir(hedef_id=None):
@@ -83,7 +129,7 @@ def tum_taramalari_calistir(hedef_id=None):
     if aktif_pos:
         pos_rapor = "📊 *AKTİF POZİSYONLARINIZ VE TP/SL TAKİBİ*\n\n"
         for sembol, detay in aktif_pos.items():
-            fiyat, rsi = guvenli_veri_ve_teknik_cek(detay['sembol'])
+            fiyat, rsi, _, _, _ = gelismis_teknik_analiz(detay['sembol'])
             if fiyat and str(fiyat) != "nan":
                 fiyat_fark = ((fiyat - detay['maliyet']) / detay['maliyet']) * 100
                 pos_rapor += f"📌 *{detay['isim']}* ({detay['sembol']})\n" \
@@ -97,72 +143,80 @@ def tum_taramalari_calistir(hedef_id=None):
     taktiksel_liste = dosya_yukle(TAKIP_LISTESI_DOSYASI, VARSAYILAN_TAKIP_LISTESI)
     
     for isim, sembol in taktiksel_liste.items():
-        fiyat, rsi = guvenli_veri_ve_teknik_cek(sembol)
+        fiyat, rsi, hacim, macd, bollinger = gelismis_teknik_analiz(sembol)
         if fiyat and rsi and str(fiyat) != "nan":
             onerilen_tp = round(fiyat * 1.10, 2)
             onerilen_sl = round(fiyat * 0.93, 2)
             
-            if rsi > 70:
-                strateji_notu = "🔴 *Aşırı Primli:* Elinde varsa kâr al, elinde yoksa alma bekle."
+            # Profesyonel Skorlama / Strateji Notu Oluşturma
+            if rsi < 35 and "ALT BANTTA" in bollinger and "YÜKSEK" in hacim:
+                strateji_notu = "🟢 *ELMAS FIRSAT (Aşırı Güçlü Dip):* Hacimli satış dipte karşılandı, kademeli alım için ideal!"
             elif rsi < 35:
-                strateji_notu = "🟢 *Dip / Fırsat Bölgesi:* Elinde yoksa kademeli al, elinde varsa tut."
+                strateji_notu = "🟢 *Dip / Fırsat Bölgesi:* RSI aşırı satımda, kademeli değerlendirilebilir."
+            elif rsi > 70 and "ÜST BANTTA" in bollinger:
+                strateji_notu = "🔴 *Aşırı Primli / Tepe:* Direnç noktasında, kâr realizasyonu düşünülmeli."
+            elif rsi > 70:
+                strateji_notu = "🔴 *Aşırı Alım Bölgesi:* Dikkatli olunmalı, yeni alım riski yüksek."
             else:
-                strateji_notu = "⚖️ *Dengeli / Bekle-Gör:* Nötr bölgede, acele etme."
+                strateji_notu = "⚖️ *Dengeli / Bekle-Gör:* Trend nötr seyrediyor."
             
             durum_metni = (
                 f"🎯 *Taktiksel Sinyal: {isim}*\n"
-                f"💰 Güncel Fiyat: {fiyat:.2f} | RSI: {rsi:.1f}\n"
+                f"💰 Fiyat: {fiyat:.2f} | RSI: {rsi:.1f}\n"
+                f"📊 Hacim: {hacim}\n"
+                f"📈 Bollinger: {bollinger}\n"
+                f"⚡ MACD: {macd}\n\n"
                 f"💡 {strateji_notu}\n\n"
                 f"📈 Önerilen TP: {onerilen_tp} | SL: {onerilen_sl}\n"
-                f"Bu işlemi açtıysan aşağıdaki butonla takibe alabilirsin:"
+                f"İşlemi açtıysan aşağıdaki butonla takibe alabilirsin:"
             )
             
             keyboard = {
                 "inline_keyboard": [
                     [{"text": "✅ Aldım / Takibe Başla", "callback_data": f"AL|{sembol}|{isim}|{fiyat}|{onerilen_tp}|{onerilen_sl}"}],
-                    [{"text": "❌ Takibi Bırak (Pozisyonu Kapat)", "callback_data": f"SIL|{sembol}"}]
+                    [{"text": "❌ Takibi Bırak", "callback_data": f"SIL|{sembol}"}]
                 ]
             }
             telegram_mesaj_gonder_butonlu(durum_metni, keyboard, hedef_id)
 
-# --- 2. ARKA PLAN NÖBETÇİSİ (RSI ve TP/SL Fiyat Alarmları) ---
+# --- 2. ARKA PLAN NÖBETÇİSİ ---
 def arka_plan_ani_kontrol():
-    print("👀 Arka plan nöbetçisi piyasayı tarıyor...")
+    print("👀 Arka plan nöbetçisi (RSI + Hacim + MACD + Bollinger) tarıyor...")
     
-    # A. Aktif Pozisyonların TP / SL Kontrolü
+    # A. Aktif Pozisyon TP / SL Kontrolü
     aktif_pos = dosya_yukle(POZISYON_DOSYASI, {})
     for sembol, detay in aktif_pos.items():
-        fiyat, _ = guvenli_veri_ve_teknik_cek(detay['sembol'])
+        fiyat, _, _, _, _ = gelismis_teknik_analiz(detay['sembol'])
         if fiyat and str(fiyat) != "nan":
             tp = detay['tp']
             sl = detay['sl']
             isim = detay['isim']
             
             if fiyat >= tp:
-                telegram_mesaj_gonder_butonlu(f"🎉 *TP (KÂR HEDEFİ) ULAŞILDI!*\n\n📌 *{isim}* ({sembol}) hedef fiyat olan *{tp}*'yi gördü!\n💰 Güncel Fiyat: {fiyat:.2f}\n💡 *Aksiyon:* Kârını cebine koymayı düşünebilirsin.")
+                telegram_mesaj_gonder_butonlu(f"🎉 *TP (KÂR HEDEFİ) ULAŞILDI!*\n\n📌 *{isim}* ({sembol}) hedef fiyat olan *{tp}*'yi gördü!\n💰 Güncel Fiyat: {fiyat:.2f}")
             elif fiyat <= sl:
-                telegram_mesaj_gonder_butonlu(f"⚠️ *ACİL STOP / SL TETİKLENDİ!*\n\n📌 *{isim}* ({sembol}) zarar kes seviyesi olan *{sl}*'ye geriledi!\n💰 Güncel Fiyat: {fiyat:.2f}\n💡 *Aksiyon:* Risk yönetimi için pozisyonu gözden geçir.")
+                telegram_mesaj_gonder_butonlu(f"⚠️ *ACİL STOP / SL TETİKLENDİ!*\n\n📌 *{isim}* ({sembol}) zarar kes seviyesi olan *{sl}*'ye geriledi!\n💰 Güncel Fiyat: {fiyat:.2f}")
 
-    # B. Taktiksel Listenin RSI Ani Değişim Kontrolü
+    # B. Taktiksel Liste Kritik Alarm Kontrolü
     taktiksel_liste = dosya_yukle(TAKIP_LISTESI_DOSYASI, VARSAYILAN_TAKIP_LISTESI)
     alarm_gecmisi = dosya_yukle(ALARM_DURUM_DOSYASI, {})
     degisiklik_oldu = False
 
     for isim, sembol in taktiksel_liste.items():
-        fiyat, rsi = guvenli_veri_ve_teknik_cek(sembol)
+        fiyat, rsi, hacim, macd, bollinger = gelismis_teknik_analiz(sembol)
         if fiyat and rsi and str(fiyat) != "nan":
             mevcut_durum = "NORMAL"
-            if rsi < 35:
+            if rsi < 35 and "ALT BANTTA" in bollinger:
                 mevcut_durum = "DIP"
-            elif rsi > 70:
+            elif rsi > 70 and "ÜST BANTTA" in bollinger:
                 mevcut_durum = "TEPE"
 
             son_durum = alarm_gecmisi.get(sembol, "NORMAL")
             if mevcut_durum in ["DIP", "TEPE"] and son_durum != mevcut_durum:
                 if mevcut_durum == "DIP":
-                    alarm_mesaj = f"🚨 *ANİ FIRSAT ALARMI!*\n\n📌 *{isim}* sert gevşeyerek dip bölgesine girdi!\n💰 Fiyat: {fiyat:.2f} | RSI: {rsi:.1f}\n💡 *Aksiyon:* Elinde yoksa kademeli alım düşünebilirsin."
+                    alarm_mesaj = f"🚨 *GÜÇLÜ DİP / FIRSAT ALARMI!*\n\n📌 *{isim}* alt banda değdi ve RSI < 35 oldu!\n💰 Fiyat: {fiyat:.2f} | RSI: {rsi:.1f}\n📊 Hacim: {hacim}\n⚡ MACD: {macd}"
                 else:
-                    alarm_mesaj = f"🚨 *ANİ KRİTİK TEPE ALARMI!*\n\n📌 *{isim}* ani yükselişle aşırı primli bölgeye ulaştı!\n💰 Fiyat: {fiyat:.2f} | RSI: {rsi:.1f}\n💡 *Aksiyon:* Elinde varsa kâr al (TP) zamanı gelmiş olabilir."
+                    alarm_mesaj = f"🚨 *KRİTİK TEPE / KÂR AL ALARMI!*\n\n📌 *{isim}* üst banda dayandı ve RSI > 70 oldu!\n💰 Fiyat: {fiyat:.2f} | RSI: {rsi:.1f}\n⚡ MACD: {macd}"
                 
                 telegram_mesaj_gonder_butonlu(alarm_mesaj, None, None)
                 alarm_gecmisi[sembol] = mevcut_durum
@@ -175,17 +229,15 @@ def arka_plan_ani_kontrol():
     if degisiklik_oldu:
         dosya_kaydet(ALARM_DURUM_DOSYASI, alarm_gecmisi)
 
-# --- OTOMATİK ZAMANLAYICILAR ---
+# --- ZAMANLAYICILAR ---
 scheduler = BackgroundScheduler()
-# 1. Sabit Günlük Rapor (Her gün 09:30'da)
 scheduler.add_job(func=lambda: tum_taramalari_calistir(None), trigger="cron", hour=9, minute=30)
-# 2. Arka Plan Nöbetçisi (Her 1 saatte bir TP/SL ve ani RSI kontrolü yapar)
 scheduler.add_job(func=arka_plan_ani_kontrol, trigger="interval", hours=1)
 scheduler.start()
 
 @app.route("/")
 def ana_sayfa():
-    return "Portföy Takip & Gelişmiş Alarm Botu Aktif!", 200
+    return "Gelişmiş Algoritmik Portföy Asistanı Aktif!", 200
 
 @app.route("/webhook", methods=["POST"])
 def telegram_webhook():
@@ -197,26 +249,24 @@ def telegram_webhook():
         chat_id = message.get("chat", {}).get("id")
         
         if text in ["/tara", "/test", "/tara@Borsa_bot"]:
-            telegram_mesaj_gonder_butonlu("🚀 *Tüm Listeler ve Aktif Pozisyonlar Taranıyor...*", None, chat_id)
+            telegram_mesaj_gonder_butonlu("🚀 *Gelişmiş İndikatörlerle (RSI, Hacim, MACD, Bollinger) Tarama Başlatıldı...*", None, chat_id)
             tum_taramalari_calistir(chat_id)
             
         elif text.startswith("/ekle "):
-            # Örnek kullanım: /ekle TSLA Tesla
             parcalar = text.split(" ", 2)
             if len(parcalar) >= 2:
                 sembol = parcalar[1].upper()
                 isim = parcalar[2] if len(parcalar) > 2 else sembol
-                
                 taktiksel_liste = dosya_yukle(TAKIP_LISTESI_DOSYASI, VARSAYILAN_TAKIP_LISTESI)
                 taktiksel_liste[isim] = sembol
                 dosya_kaydet(TAKIP_LISTESI_DOSYASI, taktiksel_liste)
-                telegram_mesaj_gonder_butonlu(f"✅ *{isim} ({sembol})* başarıyla taktiksel tarama listesine eklendi!", None, chat_id)
+                telegram_mesaj_gonder_butonlu(f"✅ *{isim} ({sembol})* listeye eklendi!", None, chat_id)
             else:
-                telegram_mesaj_gonder_butonlu("⚠️ Hatalı kullanım! Örnek: `/ekle TSLA Tesla Inc`", None, chat_id)
+                telegram_mesaj_gonder_butonlu("⚠️ Örnek kullanım: `/ekle TSLA Tesla`", None, chat_id)
 
         elif text.startswith("/hisselistesi"):
             taktiksel_liste = dosya_yukle(TAKIP_LISTESI_DOSYASI, VARSAYILAN_TAKIP_LISTESI)
-            liste_str = "📋 *Aktif Taktiksel Tarama Listesi:*\n\n"
+            liste_str = "📋 *Takip Listesi:*\n\n"
             for isim, sembol in taktiksel_liste.items():
                 liste_str += f"• {isim} (`{sembol}`)\n"
             telegram_mesaj_gonder_butonlu(liste_str, None, chat_id)
@@ -229,7 +279,6 @@ def telegram_webhook():
         
         parts = callback_data.split("|")
         islem = parts[0]
-        
         aktif_pos = dosya_yukle(POZISYON_DOSYASI, {})
         
         if islem == "AL":
@@ -238,23 +287,16 @@ def telegram_webhook():
             maliyet = float(parts[3])
             tp = float(parts[4])
             sl = float(parts[5])
-            
-            aktif_pos[sembol] = {
-                "sembol": sembol,
-                "isim": isim,
-                "maliyet": maliyet,
-                "tp": tp,
-                "sl": sl
-            }
+            aktif_pos[sembol] = {"sembol": sembol, "isim": isim, "maliyet": maliyet, "tp": tp, "sl": sl}
             dosya_kaydet(POZISYON_DOSYASI, aktif_pos)
-            telegram_mesaj_gonder_butonlu(f"✅ *{isim}* başarıyla aktif takip listene eklendi! Otomatik TP: {tp}, SL: {sl} takibe alındı.", None, chat_id)
+            telegram_mesaj_gonder_butonlu(f"✅ *{isim}* pozisyon takibine alındı (TP: {tp}, SL: {sl}).", None, chat_id)
             
         elif islem == "SIL":
             sembol = parts[1]
             if sembol in aktif_pos:
                 del aktif_pos[sembol]
                 dosya_kaydet(POZISYON_DOSYASI, aktif_pos)
-            telegram_mesaj_gonder_butonlu(f"❌ *{sembol}* pozisyon takipten çıkarıldı.", None, chat_id)
+            telegram_mesaj_gonder_butonlu(f"❌ *{sembol}* takipten çıkarıldı.", None, chat_id)
             
         try:
             requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery", json={"callback_query_id": query_id})

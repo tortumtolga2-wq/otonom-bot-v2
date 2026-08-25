@@ -61,8 +61,9 @@ def guvenli_veri_ve_teknik_cek(sembol):
     
     try:
         tiker = yf.Ticker(sembol)
+        # BİST veya diğer semboller için daha güvenli tarihsel veri çekme
         df = tiker.history(period="1mo")
-        if not df.empty:
+        if df is not None and not df.empty:
             fiyat = float(df['Close'].iloc[-1])
             close = df['Close']
             
@@ -79,17 +80,17 @@ def guvenli_veri_ve_teknik_cek(sembol):
     except Exception as e:
         print(f"yfinance hata (${sembol}): {e}")
 
-    if fiyat is None and ALPHA_VANTAGE_KEY != "BURAYA_ALPHA_VANTAGE_KEY":
-        fiyat = alpha_vantage_fiyat_cek(sembol)
-        
-    if fiyat is None and FINNHUB_KEY != "BURAYA_FINNHUB_KEY":
-        fiyat = finnhub_fiyat_cek(sembol)
+    # Eğer yfinance fiyatı çekemediyse alternatif API'leri dene (Yabancı hisseler için)
+    if (fiyat is None or str(fiyat) == "nan") and "IS" not in sembol:
+        if ALPHA_VANTAGE_KEY != "BURAYA_ALPHA_VANTAGE_KEY":
+            fiyat = alpha_vantage_fiyat_cek(sembol)
+        if (fiyat is None or str(fiyat) == "nan") and FINNHUB_KEY != "BURAYA_FINNHUB_KEY":
+            fiyat = finnhub_fiyat_cek(sembol)
 
     return fiyat, sma, rsi
 
 # --- 1. KATEGORİ: CASH LİSTESİ (Nakit Akışı & Güçlü Temel Omurga) ---
 def cash_listesi_tara(hedef_id=None):
-    # Sağlam bilanço, temettü veya güçlü nakit akışı yaratan varlıklar (Dokunulmaz Çekirdek / Dip Fırsatı kollananlar)
     liste = {
         "Vistra Energy (VST)": "VST",
         "Amazon (AMZN)": "AMZN",
@@ -104,20 +105,20 @@ def cash_listesi_tara(hedef_id=None):
         "Koç Holding (KCHOL)": "KCHOL.IS",
         "Garanti Bankası (GARAN)": "GARAN.IS",
         "Ereğli Demir Çelik (EREGL)": "EREGL.IS",
-        "Şişecam (SISE)": "SISE.IS"
+        "Şişecam (SISE)": "SISE.IS",
+        "İş Bankası C (ISCTR)": "ISCTR.IS"
     }
-    rapor = "💰 *CASH LİSTESİ (Nakit Akışı & Çekirdek Omurga)*\n_(Uzun vadeli kartopu, dip alımı & kriz kalkanı)_\n\n"
+    rapor = "💰 *CASH LİSTESİ (Nakit Akışı & Çekirdek Omurga)*\n\n"
     for isim, sembol in liste.items():
         fiyat, sma, rsi = guvenli_veri_ve_teknik_cek(sembol)
-        if fiyat:
-            rsi_str = f"{rsi:.1f}" if rsi is not None else "N/A"
-            durum = "🟢 Dip Bölgesi / Topla" if rsi and rsi < 40 else ("🔴 Aşırı Şişkin" if rsi and rsi > 70 else "⚖️ Dengeli")
-            rapor += f"🔹 {isim}: ${fiyat if 'IS' not in sembol else fiyat} | RSI: {rsi_str} ({durum})\n"
+        fiyat_str = f"{fiyat:.2f}" if fiyat and str(fiyat) != "nan" else "Veri Bekleniyor"
+        rsi_str = f"{rsi:.1f}" if rsi is not None and str(rsi) != "nan" else "N/A"
+        durum = "🟢 Dip Bölgesi" if rsi and rsi < 40 else ("🔴 Aşırı Şişkin" if rsi and rsi > 70 else "⚖️ Dengeli")
+        rapor += f"🔹 {isim}: {fiyat_str} | RSI: {rsi_str} ({durum})\n"
     telegram_mesaj_gonder(rapor, hedef_id)
 
 # --- 2. KATEGORİ: TAKTİKSEL VARLIKLAR (Takip Eden TP & SL Yönetimi) ---
 def taktiksel_liste_tara(hedef_id=None):
-    # Emtialar, madenler ve yüksek hareketli büyüme/spekülatif temalar
     liste = {
         "MP Materials (MP)": "MP",
         "Resource Holding (REXC)": "REXC",
@@ -130,18 +131,18 @@ def taktiksel_liste_tara(hedef_id=None):
         "Joby Aviation (JOBY)": "JOBY",
         "Archer Aviation (ACHR)": "ACHR"
     }
-    rapor = "⚡ *TAKTİKSEL VARLIKLAR (TP / SL Takip Listesi)*\n_(Hızlı hareketli emtialar & dinamik stop-loss yönetimi)_\n\n"
+    rapor = "⚡ *TAKTİKSEL VARLIKLAR (TP / SL Takip Listesi)*\n\n"
     for isim, sembol in liste.items():
         fiyat, sma, rsi = guvenli_veri_ve_teknik_cek(sembol)
-        if fiyat:
-            rsi_str = f"{rsi:.1f}" if rsi is not None else "N/A"
-            rapor += f"🎯 {isim}: ${fiyat:.2f} | RSI: {rsi_str} | *(Takip Eden TP/SL Aktif)*\n"
+        fiyat_str = f"{fiyat:.2f}" if fiyat and str(fiyat) != "nan" else "Veri Bekleniyor"
+        rsi_str = f"{rsi:.1f}" if rsi is not None and str(rsi) != "nan" else "N/A"
+        rapor += f"🎯 {isim}: {fiyat_str} | RSI: {rsi_str} | *(TP/SL Aktif)*\n"
     telegram_mesaj_gonder(rapor, hedef_id)
 
 # --- 3. GOOGLE GEMINI AI İLE HABER & MAKRO SÜZGECİ ---
 def gemini_haber_analizi_sun(hedef_id=None):
     if GEMINI_API_KEY == "BURAYA_GEMINI_API_KEY":
-        telegram_mesaj_gonder("💡 *Makro Süzgeç:* Gemini API anahtarı girilmediği için standart akıllı öngörü sunuluyor.", hedef_id)
+        telegram_mesaj_gonder("💡 *Makro Süzgeç:* Gemini API anahtarı eklenmemiş.", hedef_id)
         return
 
     try:
@@ -155,7 +156,7 @@ def gemini_haber_analizi_sun(hedef_id=None):
             model='gemini-2.5-flash',
             contents=prompt,
         )
-        analiz_metni = f"🧠 *Yapay Zeka (Gemini) Stratejik Piyasa Süzgeci*\n\n{response.text}"
+        analiz_metni = f"🧠 *Yapay Zeka (Gemini) Stratejik Süzgeç*\n\n{response.text}"
         telegram_mesaj_gonder(analiz_metni, hedef_id)
     except Exception as e:
         telegram_mesaj_gonder(f"⚠️ Gemini analiz hatası: {e}", hedef_id)
@@ -188,7 +189,7 @@ def telegram_webhook():
         chat_id = message.get("chat", {}).get("id")
         
         if text.strip() in ["/tara", "/test", "/tara@Borsa_bot"]:
-            telegram_mesaj_gonder("🚀 *Manuel Anlık Portföy Raporu Hazırlanıyor...*", chat_id)
+            telegram_mesaj_gonder("🚀 *Tüm Listeler Taranıyor, Rapor Hazırlanıyor...*", chat_id)
             tum_taramalari_calistir(chat_id)
             
     return "OK", 200

@@ -1,4 +1,5 @@
 import os
+import json
 import requests
 import yfinance as yf
 from flask import Flask, request
@@ -10,12 +11,28 @@ app = Flask(__name__)
 # --- AYARLAR VE TOKEN BİLGİLERİ ---
 TELEGRAM_BOT_TOKEN = "8809685206:AAEkCfzyjMKc622Z7nR5tvtzIYnjFGYKY-k"
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "MEVCUT_CHAT_ID_BURAYA")
-
-ALPHA_VANTAGE_KEY = os.environ.get("ALPHA_VANTAGE_KEY", "BURAYA_ALPHA_VANTAGE_KEY")
-FINNHUB_KEY = os.environ.get("FINNHUB_KEY", "BURAYA_FINNHUB_KEY")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "BURAYA_GEMINI_API_KEY")
 
-def telegram_mesaj_gonder(mesaj: str, hedef_id=None):
+# Aktif takip edilen pozisyonları saklamak için basit hafıza dosyası
+POZISYON_DOSYASI = "aktif_pozisyonlar.json"
+
+def pozisyonlari_yukle():
+    if os.path.exists(POZISYON_DOSYASI):
+        try:
+            with open(POZISYON_DOSYASI, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+def pozisyonlari_kaydet(veri):
+    try:
+        with open(POZISYON_DOSYASI, "w", encoding="utf-8") as f:
+            json.dump(veri, f, ensure_ascii=False, indent=4)
+    except Exception as e:
+        print(f"Pozisyon kayıt hatası: {e}")
+
+def telegram_mesaj_gonder_butonlu(mesaj: str, reply_markup=None, hedef_id=None):
     chat_id = hedef_id if hedef_id else TELEGRAM_CHAT_ID
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
@@ -23,53 +40,24 @@ def telegram_mesaj_gonder(mesaj: str, hedef_id=None):
         "text": mesaj,
         "parse_mode": "Markdown"
     }
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+        
     try:
         response = requests.post(url, json=payload)
         return response.json()
     except Exception as e:
         print(f"Telegram mesaj hatası: {e}")
 
-def alpha_vantage_fiyat_cek(sembol):
-    try:
-        url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={sembol}&apikey={ALPHA_VANTAGE_KEY}"
-        response = requests.get(url, timeout=5)
-        data = response.json()
-        fiyat = data.get("Global Quote", {}).get("05. price")
-        if fiyat:
-            return float(fiyat)
-    except Exception:
-        pass
-    return None
-
-def finnhub_fiyat_cek(sembol):
-    try:
-        temiz_sembol = sembol.split('.')[0]
-        url = f"https://finnhub.io/api/v1/quote?symbol={temiz_sembol}&token={FINNHUB_KEY}"
-        response = requests.get(url, timeout=5)
-        data = response.json()
-        fiyat = data.get("c")
-        if fiyat and fiyat > 0:
-            return float(fiyat)
-    except Exception:
-        pass
-    return None
-
 def guvenli_veri_ve_teknik_cek(sembol):
     fiyat = None
-    sma = None
     rsi = None
-    
     try:
         tiker = yf.Ticker(sembol)
-        # BİST veya diğer semboller için daha güvenli tarihsel veri çekme
         df = tiker.history(period="1mo")
         if df is not None and not df.empty:
             fiyat = float(df['Close'].iloc[-1])
             close = df['Close']
-            
-            if len(close) >= 14:
-                sma = float(close.rolling(window=14).mean().iloc[-1])
-                
             if len(close) >= 14:
                 delta = close.diff()
                 gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
@@ -78,98 +66,65 @@ def guvenli_veri_ve_teknik_cek(sembol):
                 rsi_series = 100 - (100 / (1 + rs))
                 rsi = float(rsi_series.iloc[-1])
     except Exception as e:
-        print(f"yfinance hata (${sembol}): {e}")
+        print(f"yfinance hata ({sembol}): {e}")
+    return fiyat, rsi
 
-    # Eğer yfinance fiyatı çekemediyse alternatif API'leri dene (Yabancı hisseler için)
-    if (fiyat is None or str(fiyat) == "nan") and "IS" not in sembol:
-        if ALPHA_VANTAGE_KEY != "BURAYA_ALPHA_VANTAGE_KEY":
-            fiyat = alpha_vantage_fiyat_cek(sembol)
-        if (fiyat is None or str(fiyat) == "nan") and FINNHUB_KEY != "BURAYA_FINNHUB_KEY":
-            fiyat = finnhub_fiyat_cek(sembol)
-
-    return fiyat, sma, rsi
-
-# --- 1. KATEGORİ: CASH LİSTESİ (Nakit Akışı & Güçlü Temel Omurga) ---
-def cash_listesi_tara(hedef_id=None):
-    liste = {
-        "Vistra Energy (VST)": "VST",
-        "Amazon (AMZN)": "AMZN",
-        "Alphabet / Google (GOOGL)": "GOOGL",
-        "NVIDIA (NVDA)": "NVDA",
-        "Taiwan Semiconductor (TSM)": "TSM",
-        "Palantir Technologies (PLTR)": "PLTR",
-        "Tesla (TSLA)": "TSLA",
-        "Oklo Inc. (OKLO)": "OKLO",
-        "GE Vernova (GEV)": "GEV",
-        "Türk Hava Yolları (THYAO)": "THYAO.IS",
-        "Koç Holding (KCHOL)": "KCHOL.IS",
-        "Garanti Bankası (GARAN)": "GARAN.IS",
-        "Ereğli Demir Çelik (EREGL)": "EREGL.IS",
-        "Şişecam (SISE)": "SISE.IS",
-        "İş Bankası C (ISCTR)": "ISCTR.IS"
-    }
-    rapor = "💰 *CASH LİSTESİ (Nakit Akışı & Çekirdek Omurga)*\n\n"
-    for isim, sembol in liste.items():
-        fiyat, sma, rsi = guvenli_veri_ve_teknik_cek(sembol)
-        fiyat_str = f"{fiyat:.2f}" if fiyat and str(fiyat) != "nan" else "Veri Bekleniyor"
-        rsi_str = f"{rsi:.1f}" if rsi is not None and str(rsi) != "nan" else "N/A"
-        durum = "🟢 Dip Bölgesi" if rsi and rsi < 40 else ("🔴 Aşırı Şişkin" if rsi and rsi > 70 else "⚖️ Dengeli")
-        rapor += f"🔹 {isim}: {fiyat_str} | RSI: {rsi_str} ({durum})\n"
-    telegram_mesaj_gonder(rapor, hedef_id)
-
-# --- 2. KATEGORİ: TAKTİKSEL VARLIKLAR (Takip Eden TP & SL Yönetimi) ---
-def taktiksel_liste_tara(hedef_id=None):
-    liste = {
-        "MP Materials (MP)": "MP",
-        "Resource Holding (REXC)": "REXC",
-        "Precious Metals ETF (GLTR)": "GLTR",
-        "GBUG (GBUG)": "GBUG",
-        "Maden Varlığı (NB)": "NB",
-        "Agnico Eagle Mines (AEM)": "AEM",
-        "Nu Holdings (NU)": "NU",
-        "Symbotic (SYM)": "SYM",
-        "Joby Aviation (JOBY)": "JOBY",
-        "Archer Aviation (ACHR)": "ACHR"
-    }
-    rapor = "⚡ *TAKTİKSEL VARLIKLAR (TP / SL Takip Listesi)*\n\n"
-    for isim, sembol in liste.items():
-        fiyat, sma, rsi = guvenli_veri_ve_teknik_cek(sembol)
-        fiyat_str = f"{fiyat:.2f}" if fiyat and str(fiyat) != "nan" else "Veri Bekleniyor"
-        rsi_str = f"{rsi:.1f}" if rsi is not None and str(rsi) != "nan" else "N/A"
-        rapor += f"🎯 {isim}: {fiyat_str} | RSI: {rsi_str} | *(TP/SL Aktif)*\n"
-    telegram_mesaj_gonder(rapor, hedef_id)
-
-# --- 3. GOOGLE GEMINI AI İLE HABER & MAKRO SÜZGECİ ---
-def gemini_haber_analizi_sun(hedef_id=None):
-    if GEMINI_API_KEY == "BURAYA_GEMINI_API_KEY":
-        telegram_mesaj_gonder("💡 *Makro Süzgeç:* Gemini API anahtarı eklenmemiş.", hedef_id)
-        return
-
-    try:
-        client = genai.Client(api_key=GEMINI_API_KEY)
-        prompt = (
-            "Küresel piyasalarda yapay zeka, nükleer enerji altyapısı (OKLO, VST), madenler/emtialar (MP, REXC) "
-            "ve tedarik zinciri açısından önümüzdeki dönemi değerlendir. 5-10 yıllık yatırımcı gözüyle "
-            "kısa ve vurucu bir stratejik risk/fırsat analizi yap."
-        )
-        response = client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=prompt,
-        )
-        analiz_metni = f"🧠 *Yapay Zeka (Gemini) Stratejik Süzgeç*\n\n{response.text}"
-        telegram_mesaj_gonder(analiz_metni, hedef_id)
-    except Exception as e:
-        telegram_mesaj_gonder(f"⚠️ Gemini analiz hatası: {e}", hedef_id)
-
+# --- TARAMA VE BUTONLU RAPORLAMA ---
 def tum_taramalari_calistir(hedef_id=None):
-    cash_listesi_tara(hedef_id)
-    taktiksel_liste_tara(hedef_id)
-    gemini_haber_analizi_sun(hedef_id)
+    # 1. Aktif Takip Edilen Pozisyonların Güncel Durumu
+    aktif_pos = pozisyonlari_yukle()
+    if aktif_pos:
+        pos_rapor = "📊 *AKTİF POZİSYONLARINIZ VE TP/SL TAKİBİ*\n\n"
+        for sembol, detay in aktif_pos.items():
+            fiyat, rsi = guvenli_veri_ve_teknik_cek(detay['sembol'])
+            if fiyat and str(fiyat) != "nan":
+                fiyat_fark = ((fiyat - detay['maliyet']) / detay['maliyet']) * 100
+                pos_rapor += f"📌 *{detay['isim']}*\n" \
+                             f"   Maliyet: {detay['maliyet']:.2f} | Güncel: {fiyat:.2f} (%{fiyat_fark:+.2f})\n" \
+                             f"   Hedef TP: {detay['tp']} | Zarar Kes SL: {detay['sl']}\n" \
+                             f"   -----------------------------------\n"
+            else:
+                pos_rapor += f"📌 *{detay['isim']}*: Fiyat bekleniyor...\n"
+        telegram_mesaj_gonder_butonlu(pos_rapor, None, hedef_id)
+
+    # 2. Taktiksel Fırsatlar ve İnteraktif Butonlar
+    taktiksel_liste = {
+        "NVIDIA (NVDA)": "NVDA",
+        "Palantir (PLTR)": "PLTR",
+        "MP Materials (MP)": "MP",
+        "Resource Holding (REXC)": "REXC"
+    }
+    
+    for isim, sembol in taktiksel_liste.items():
+        fiyat, rsi = guvenli_veri_ve_teknik_cek(sembol)
+        if fiyat and rsi and str(fiyat) != "nan":
+            onerilen_tp = round(fiyat * 1.10, 2)
+            onerilen_sl = round(fiyat * 0.93, 2)
+            
+            durum_metni = (
+                f"🎯 *Taktiksel Sinyal: {isim}*\n"
+                f"💰 Güncel Fiyat: {fiyat:.2f} | RSI: {rsi:.1f}\n"
+                f"📈 Önerilen TP: {onerilen_tp} | SL: {onerilen_sl}\n\n"
+                f"Bu işlemi açtıysan aşağıdaki butonla takibe alabilirsin:"
+            )
+            
+            # İnteraktif Telegram Butonları
+            keyboard = {
+                "inline_keyboard": [
+                    [
+                        {"text": "✅ Aldım / Takibe Başla", "callback_data": f"AL|{sembol}|{isim}|{fiyat}|{onerilen_tp}|{onerilen_sl}"}
+                    ],
+                    [
+                        {"text": "❌ Takibi Bırak (Pozisyonu Kapat)", "callback_data": f"SIL|{sembol}"}
+                    ]
+                ]
+            }
+            telegram_mesaj_gonder_butonlu(durum_metni, keyboard, hedef_id)
 
 # --- OTOMATİK ZAMANLAYICI ---
 def otomatik_gunluk_tarama():
     print("⏰ Otomatik günlük portföy taraması tetiklendi...")
-    telegram_mesaj_gonder("⏰ *Günlük Otomatik Portföy & Stratejik Sinyal Raporu Başlatılıyor...*")
+    telegram_mesaj_gonder_butonlu("⏰ *Günlük Otomatik Portföy & Pozisyon Takip Raporu Başlatılıyor...*")
     tum_taramalari_calistir(None)
 
 scheduler = BackgroundScheduler()
@@ -178,20 +133,64 @@ scheduler.start()
 
 @app.route("/")
 def ana_sayfa():
-    return "Portföy Takip & Gemini AI Botu Aktif ve Çalışıyor!", 200
+    return "Portföy Takip & İnteraktif Bot Aktif!", 200
 
 @app.route("/webhook", methods=["POST"])
 def telegram_webhook():
     data = request.get_json()
+    
+    # 1. Kullanıcıdan Gelen Mesajlar (/tara vb.)
     if data and "message" in data:
         message = data["message"]
         text = message.get("text", "")
         chat_id = message.get("chat", {}).get("id")
         
         if text.strip() in ["/tara", "/test", "/tara@Borsa_bot"]:
-            telegram_mesaj_gonder("🚀 *Tüm Listeler Taranıyor, Rapor Hazırlanıyor...*", chat_id)
+            telegram_mesaj_gonder_butonlu("🚀 *Tüm Listeler ve Aktif Pozisyonlar Taranıyor...*", None, chat_id)
             tum_taramalari_calistir(chat_id)
+
+    # 2. Buton Tıklamaları (Callback Query)
+    elif data and "callback_query" in data:
+        query = data["callback_query"]
+        callback_data = query.get("data", "")
+        chat_id = query.get("message", {}).get("chat", {}).get("id")
+        query_id = query.get("id")
+        
+        parts = callback_data.split("|")
+        islem = parts[0]
+        
+        aktif_pos = pozisyonlari_yukle()
+        
+        if islem == "AL":
+            sembol = parts[1]
+            isim = parts[2]
+            maliyet = float(parts[3])
+            tp = float(parts[4])
+            sl = float(parts[5])
             
+            aktif_pos[sembol] = {
+                "sembol": sembol,
+                "isim": isim,
+                "maliyet": maliyet,
+                "tp": tp,
+                "sl": sl
+            }
+            pozisyonlari_kaydet(aktif_pos)
+            telegram_mesaj_gonder_butonlu(f"✅ *{isim}* başarıyla aktif takip listene eklendi! Maliyet: {maliyet}, TP: {tp}, SL: {sl}", None, chat_id)
+            
+        elif islem == "SIL":
+            sembol = parts[1]
+            if sembol in aktif_pos:
+                del aktif_pos[sembol]
+                pozisyonlari_kaydet(aktif_pos)
+            telegram_mesaj_gonder_butonlu(f"❌ *{sembol}* pozisyon takipten çıkarıldı. (Genel piyasa taramalarında görünmeye devam edecek).", None, chat_id)
+            
+        # Telegram'a buton tıklandığını onaylayan boş istek
+        try:
+            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery", json={"callback_query_id": query_id})
+        except Exception:
+            pass
+
     return "OK", 200
 
 if __name__ == "__main__":

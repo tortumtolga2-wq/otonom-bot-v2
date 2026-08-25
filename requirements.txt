@@ -3,3 +3,4 @@ apscheduler
 yfinance
 requests
 google-genai
+gunicorn
